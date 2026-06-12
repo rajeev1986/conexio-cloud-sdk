@@ -598,6 +598,7 @@ static enum conexio_setting_status builtin_on_interval_setting(int32_t value, vo
 
 /* Default FOTA event handler — just logs progress.
  * Applications can supply their own via conexio_cloud_set_fota_cb(). */
+#if defined(CONFIG_CONEXIO_CLOUD_FOTA)
 static fota_event_cb_t g_fota_user_cb = NULL;
 
 static void sdk_fota_event_handler(const struct fota_event *evt)
@@ -1486,7 +1487,8 @@ int conexio_cloud_init(conexio_cloud_event_cb_t cb)
         strncpy(g_device_id, imei, sizeof(g_device_id) - 1);
     } else {
         LOG_WRN("IMEI unavailable — using fallback device ID");
-        strncpy(g_device_id, "000000000000000", sizeof(g_device_id) - 1);
+        memcpy(g_device_id, "000000000000000", 15);
+        g_device_id[15] = '\0';
     }
     LOG_INF("Device ID: %s", g_device_id);
     LOG_INF("Registered: %d command(s), %d setting(s)", cmd_count, setting_count);
