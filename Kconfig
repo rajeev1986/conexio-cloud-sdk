@@ -15,9 +15,7 @@ menuconfig CONEXIO_CLOUD
 	select LTE_LINK_CONTROL
 	select NETWORKING
 	select NET_SOCKETS
-	select NET_SOCKETS_POSIX_NAMES
 	select NET_SOCKETS_OFFLOAD
-	select NET_SECURITY
 	select TLS_CREDENTIALS
 	select MODEM_KEY_MGMT
 	select CJSON_LIB
@@ -229,11 +227,10 @@ config CONEXIO_CLOUD_FOTA
 	select FOTA_DOWNLOAD
 	select FOTA_DOWNLOAD_PROGRESS_EVT
 	select BOOTLOADER_MCUBOOT
-	select IMG_MANAGER
-	select MCUBOOT_IMG_MANAGER
 	select DFU_TARGET
 	select DFU_TARGET_MCUBOOT
 	select DOWNLOAD_CLIENT
+	select STREAM_FLASH
 	help
 	  Enables firmware update via AWS IoT Jobs and MCUboot.
 	  When a job is created on the Conexio Console Firmware page, the SDK
