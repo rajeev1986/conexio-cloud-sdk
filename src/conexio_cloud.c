@@ -242,7 +242,7 @@ static bool g_ntp_synced = false;
 
 static void ntp_event_handler(const struct date_time_evt *evt)
 {
-    if (evt->type == DATE_TIME_EVT_TYPE_SNTP_OBTAINED) {
+    if (evt->type == DATE_TIME_OBTAINED_NTP || evt->type == DATE_TIME_OBTAINED_MODEM) {
         LOG_INF("NTP synced");
         g_ntp_synced = true;
         k_sem_give(&ntp_ready_sem);
@@ -431,6 +431,8 @@ static void reboot_reason_init(void)
     LOG_DBG("CONFIG_HWINFO not set — add to prj.conf for reboot reason tracking");
 }
 #endif /* CONFIG_HWINFO */
+
+/* ── Cloud background thread ─────────────────────────────────────────────
  *
  * Spawned at the end of conexio_cloud_init().
  * Runs at the lowest application priority so it doesn't starve user threads.
@@ -1442,6 +1444,8 @@ int conexio_cloud_register_setting_string(const char *key,
  */
 int conexio_cloud_init(conexio_cloud_event_cb_t cb)
 {
+    int ret = 0;
+
     if (g_initialised) {
         LOG_WRN("conexio_cloud_init() called more than once — ignoring");
         return -EALREADY;
@@ -1537,7 +1541,7 @@ int conexio_cloud_init(conexio_cloud_event_cb_t cb)
 
     /* ── Step 6: Connect LTE (if SDK manages it) ────────────────────── */
 #if defined(CONFIG_CONEXIO_CLOUD_MANAGE_LTE)
-    int ret = conexio_lte_connect(CONFIG_CONEXIO_CLOUD_LTE_TIMEOUT_SEC);
+    ret = conexio_lte_connect(CONFIG_CONEXIO_CLOUD_LTE_TIMEOUT_SEC);
     if (ret) {
         LOG_ERR("LTE connection failed (%d)", ret);
         dispatch_error(ret);
@@ -1564,7 +1568,7 @@ int conexio_cloud_init(conexio_cloud_event_cb_t cb)
 
     /* ── Step 7: Fetch cloud config from Conexio config service ─────── */
     struct conexio_cloud_config_t cloud_cfg;
-    int ret = config_fetch(g_device_id, &cloud_cfg);
+    ret = config_fetch(g_device_id, &cloud_cfg);
     if (ret) {
         LOG_ERR("config_fetch() failed (%d)", ret);
         dispatch_error(ret);

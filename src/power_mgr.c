@@ -65,11 +65,11 @@ static void lte_evt_handler(const struct lte_lc_evt *const evt)
         break;
 
     case LTE_LC_EVT_EDRX_UPDATE:
-        /* edrx and ptw are float in NCS v3.2.1 — use %.2f format */
-        LOG_INF("eDRX updated: mode=%d, edrx=%.2fs, ptw=%.2fs",
+        /* edrx and ptw are float — log as integer ms to avoid fp formatter */
+        LOG_INF("eDRX updated: mode=%d, edrx=%dms, ptw=%dms",
                 evt->edrx_cfg.mode,
-                (double)evt->edrx_cfg.edrx,
-                (double)evt->edrx_cfg.ptw);
+                (int)(evt->edrx_cfg.edrx * 1000),
+                (int)(evt->edrx_cfg.ptw  * 1000));
         break;
 
     case LTE_LC_EVT_MODEM_SLEEP_ENTER:

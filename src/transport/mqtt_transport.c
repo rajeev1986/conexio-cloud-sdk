@@ -374,18 +374,18 @@ int transport_init_with_config(const char *device_id,
 int transport_connect(void)
 {
     /* DNS resolution — converts hostname to IPv4 address */
-    struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM };
-    struct addrinfo *res;
+    struct zsock_addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM };
+    struct zsock_addrinfo *res;
     char port_str[8];
     snprintf(port_str, sizeof(port_str), "%d", BROKER_PORT);
 
-    int ret = getaddrinfo(g_broker_host, port_str, &hints, &res);
+    int ret = zsock_getaddrinfo(g_broker_host, port_str, &hints, &res);
     if (ret) {
         LOG_ERR("DNS resolution failed for %s (%d)", g_broker_host, ret);
         return -ENOENT;
     }
     memcpy(&broker_addr, res->ai_addr, res->ai_addrlen);
-    freeaddrinfo(res);
+    zsock_freeaddrinfo(res);
 
     /* Retrieve device ID from the SDK core — used as the MQTT client ID.
      * AWS IoT Core requires client ID == IoT Thing name for policy enforcement. */

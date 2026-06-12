@@ -77,20 +77,19 @@ static int     ca_body_len = 0;   /* Actual byte count of the PEM          */
  * We copy the body (the PEM certificate) into ca_body so the caller
  * can pass it directly to modem_key_mgmt_write().
  */
-static void ca_http_response(struct http_response *rsp,
-                              enum http_final_call final_data,
-                              void *user_data)
+static int ca_http_response(struct http_response *rsp,
+                             enum http_final_call final_data,
+                             void *user_data)
 {
     ARG_UNUSED(user_data);
 
     if (final_data == HTTP_DATA_FINAL && rsp->http_status_code == 200) {
-        /* Cap copy at buffer size - 1 to leave room for null terminator */
         size_t copy_len = MIN(rsp->body_frag_len, sizeof(ca_body) - 1);
         memcpy(ca_body, rsp->body_frag_start, copy_len);
         ca_body[copy_len] = '\0';
         ca_body_len = (int)copy_len;
     }
-    /* Non-200 responses leave ca_body_len = 0; the caller handles the error */
+    return 0;
 }
 
 /* ── download_root_ca — fetch PEM from URL into ca_body ──────────────────
@@ -163,9 +162,9 @@ static int download_root_ca(const char *url)
     zsock_setsockopt(sock, SOL_TLS, TLS_HOSTNAME, host, strlen(host));
 
     /* ── DNS + connect ──────────────────────────────────────────────────*/
-    struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM };
-    struct addrinfo *res;
-    ret = getaddrinfo(host, "443", &hints, &res);
+    struct zsock_addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM };
+    struct zsock_addrinfo *res;
+    ret = zsock_getaddrinfo(host, "443", &hints, &res);
     if (ret) {
         LOG_ERR("DNS resolution failed for %s", host);
         zsock_close(sock);
@@ -173,7 +172,7 @@ static int download_root_ca(const char *url)
     }
 
     ret = zsock_connect(sock, res->ai_addr, res->ai_addrlen);
-    freeaddrinfo(res);
+    zsock_freeaddrinfo(res);
     if (ret) {
         LOG_ERR("TCP connect to %s:443 failed (%d)", host, errno);
         zsock_close(sock);
@@ -196,7 +195,7 @@ static int download_root_ca(const char *url)
     };
 
     LOG_INF("Downloading Root CA from %s%s", host, path_start);
-    ret = http_client_req(sock, &req, K_SECONDS(15), NULL);
+    ret = http_client_req(sock, &req, 15000, NULL);
     zsock_close(sock);
 
     if (ret < 0 || ca_body_len == 0) {
