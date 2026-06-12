@@ -46,12 +46,8 @@ static void lte_evt_handler(const struct lte_lc_evt *const evt)
         }
         break;
 
+#if defined(CONFIG_LTE_LC_PSM_MODULE)
     case LTE_LC_EVT_PSM_UPDATE:
-        /*
-         * Network reports the actual PSM timers it granted.
-         * These may differ from what we requested.
-         * Gated by CONFIG_LTE_LC_PSM_MODULE in NCS v3.2.1.
-         */
         if (evt->psm_cfg.active_time == -1) {
             LOG_WRN("Network did not grant PSM (TAU=%d, active=-1) — "
                     "device will stay connected between transmissions",
@@ -63,15 +59,18 @@ static void lte_evt_handler(const struct lte_lc_evt *const evt)
             g_psm_active = true;
         }
         break;
+#endif /* CONFIG_LTE_LC_PSM_MODULE */
 
+#if defined(CONFIG_LTE_LC_EDRX_MODULE)
     case LTE_LC_EVT_EDRX_UPDATE:
-        /* edrx and ptw are float — log as integer ms to avoid fp formatter */
         LOG_INF("eDRX updated: mode=%d, edrx=%dms, ptw=%dms",
                 evt->edrx_cfg.mode,
                 (int)(evt->edrx_cfg.edrx * 1000),
                 (int)(evt->edrx_cfg.ptw  * 1000));
         break;
+#endif /* CONFIG_LTE_LC_EDRX_MODULE */
 
+#if defined(CONFIG_LTE_LC_MODEM_SLEEP_MODULE)
     case LTE_LC_EVT_MODEM_SLEEP_ENTER:
         LOG_DBG("Modem entered sleep (PSM)");
         break;
@@ -79,6 +78,7 @@ static void lte_evt_handler(const struct lte_lc_evt *const evt)
     case LTE_LC_EVT_MODEM_SLEEP_EXIT:
         LOG_DBG("Modem exited sleep");
         break;
+#endif /* CONFIG_LTE_LC_MODEM_SLEEP_MODULE */
 
     default:
         break;
