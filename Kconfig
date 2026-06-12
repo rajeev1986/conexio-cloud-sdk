@@ -1,0 +1,377 @@
+# =============================================================================
+# Conexio Cloud SDK — Phase 2
+# Runtime config fetch — zero endpoint configuration in prj.conf.
+#
+# The only option your application needs to set is:
+#   CONFIG_CONEXIO_CLOUD=y
+#
+# Everything else (cloud host, API key, certificates) is fetched from the
+# Conexio config endpoint at runtime using the device's IMEI as identity.
+# =============================================================================
+
+menuconfig CONEXIO_CLOUD
+	bool "Conexio Cloud SDK v2 (zero-config)"
+	select NRF_MODEM_LIB
+	select LTE_LINK_CONTROL
+	select NETWORKING
+	select NET_SOCKETS
+	select NET_SOCKETS_POSIX_NAMES
+	select NET_SOCKETS_OFFLOAD
+	select NET_SECURITY
+	select TLS_CREDENTIALS
+	select MODEM_KEY_MGMT
+	select CJSON_LIB
+	select DATE_TIME
+	select MODEM_INFO
+	select HTTP_CLIENT
+	select HWINFO
+	help
+	  Enables the Conexio Cloud SDK v2 for nRF91xx devices.
+	  Cloud endpoint, API key, and certificates are fetched automatically
+	  at runtime — no endpoint configuration required in prj.conf.
+	  HWINFO is selected automatically to enable reboot reason tracking.
+
+if CONEXIO_CLOUD
+
+# ── Protocol selection ────────────────────────────────────────────────────────
+
+choice CONEXIO_CLOUD_TRANSPORT
+	prompt "Transport protocol"
+	default CONEXIO_CLOUD_MQTT
+
+config CONEXIO_CLOUD_MQTT
+	bool "MQTT over TLS (recommended)"
+	select MQTT_LIB
+	select MQTT_LIB_TLS
+	help
+	  Bidirectional — device can receive commands, OTA config pushes,
+	  and scheduled actions from the Conexio Console dashboard.
+
+config CONEXIO_CLOUD_HTTP
+	bool "HTTPS POST (telemetry + polled commands)"
+	help
+	  Sends telemetry via POST /v1/ingest. After each successful ingest the
+	  SDK automatically polls GET /v1/device-commands and GET /v1/devices/<id>/config/pending
+	  so HTTP/sleepy devices can receive commands and OTA config updates.
+	  Auth: API key only — no device certificate required.
+
+endchoice
+
+# ── Config fetch endpoint ─────────────────────────────────────────────────────
+# This is the ONLY endpoint ever set in firmware — it is the same for
+# every Conexio customer. The response contains the customer-specific
+# MQTT/HTTP endpoints and API keys.
+
+config CONEXIO_CLOUD_CONFIG_HOST
+	string "Conexio config service hostname"
+	default "config.conexio.io"
+	help
+	  The Conexio runtime configuration service. Returns per-workspace
+	  MQTT/HTTP endpoints and credentials based on the device IMEI.
+	  Change only if self-hosting the config service.
+
+config CONEXIO_CLOUD_CONFIG_PATH
+	string "Conexio config service path"
+	default "/v1/device-config"
+	help
+	  Path on the config service. The SDK appends ?imei=<IMEI> automatically.
+
+config CONEXIO_CLOUD_CONFIG_CACHE_SEC
+	int "Config cache TTL (seconds)"
+	default 3600
+	range 300 86400
+	help
+	  How long to cache the fetched config before re-fetching.
+	  Set to 3600 (1 hour) by default — the config changes rarely.
+
+# ── Telemetry ─────────────────────────────────────────────────────────────────
+
+config CONEXIO_CLOUD_INTERVAL_SEC
+	int "Telemetry publish interval (seconds)"
+	default 60
+	range 10 3600
+
+config CONEXIO_CLOUD_METRIC_QUEUE_SIZE
+	int "Maximum metrics buffered per publish"
+	default 16
+	range 4 64
+
+config CONEXIO_CLOUD_MAX_COMMANDS
+	int "Maximum number of registered command handlers"
+	default 16
+	range 4 32
+	help
+	  Each conexio_cloud_register_command() call uses one slot.
+
+config CONEXIO_CLOUD_MAX_SETTINGS
+	int "Maximum number of registered setting handlers"
+	default 16
+	range 4 32
+	help
+	  Each conexio_cloud_register_setting_*() call uses one slot.
+
+config CONEXIO_CLOUD_MAX_SENSORS
+	int "Maximum number of registered sensor callbacks"
+	default 8
+	range 2 32
+	help
+	  Each conexio_cloud_register_sensor() call uses one slot.
+	  Sensor callbacks are called automatically before each telemetry publish.
+
+# ── Built-in telemetryIntervalSec setting ─────────────────────────────────────
+
+config CONEXIO_CLOUD_AUTO_INTERVAL_SETTING
+	bool "Register telemetryIntervalSec as a built-in OTA Config setting"
+	default y
+	help
+	  When enabled, the SDK automatically handles the 'telemetryIntervalSec'
+	  key from OTA Config page pushes — no application handler needed.
+	  The value updates the SDK publish interval and is kept in sync with the
+	  SET_INTERVAL command. Disable if you want to handle this key yourself.
+
+# ── Auto-metrics ──────────────────────────────────────────────────────────────
+
+config CONEXIO_CLOUD_AUTO_BATTERY
+	bool "Auto-include battery voltage (_battery_mv) in every payload"
+	default n
+	help
+	  Reads battery voltage via the modem's AT%XVBAT command and adds it as
+	  the _battery_mv metric in every telemetry payload.
+	  Only supported on hardware where VDDMAIN is connected to the modem.
+
+config CONEXIO_CLOUD_MODEM_INFO_REFRESH
+	int "Modem info refresh interval (publishes)"
+	default 5
+	range 1 100
+	help
+	  modem_info_params_get() issues blocking AT commands that take 10–50 ms.
+	  This setting controls how often the SDK re-reads RSSI and SNR from the
+	  modem — every Nth telemetry publish.  Between refreshes the last cached
+	  values are used.  Set to 1 to refresh on every publish (highest accuracy,
+	  highest overhead).  Set to 10 to refresh once every 10 publishes.
+
+config CONEXIO_CLOUD_SLOW_METRIC_INTERVAL
+	int "Slow metric publish interval (publishes)"
+	default 10
+	range 2 100
+	help
+	  How often to include slowly-changing metrics that are unlikely to change
+	  between publishes: _lte_band, _cell_id, _tac.
+	  A value of 10 means these are included once every 10 publishes.
+	  At a 60s telemetry interval this is approximately every 10 minutes.
+	  Set to 2 for faster location tracking at the cost of more data.
+
+# ── NTP sync timeout ──────────────────────────────────────────────────────────
+
+config CONEXIO_CLOUD_NTP_TIMEOUT_SEC
+	int "NTP sync timeout (seconds)"
+	default 10
+	range 3 60
+	help
+	  Maximum seconds to wait for NTP sync during conexio_cloud_init().
+	  The SDK uses an event-driven wait rather than a blind k_sleep().
+	  If NTP doesn't respond within this window, init continues and the
+	  offline buffer will skip payloads with invalid timestamps.
+
+# ── LTE ───────────────────────────────────────────────────────────────────────
+
+config CONEXIO_CLOUD_MANAGE_LTE
+	bool "SDK manages LTE connection"
+	default y
+
+config CONEXIO_CLOUD_LTE_TIMEOUT_SEC
+	int "LTE registration timeout (seconds)"
+	default 90
+	range 30 300
+	depends on CONEXIO_CLOUD_MANAGE_LTE
+
+# ── MQTT ──────────────────────────────────────────────────────────────────────
+
+config CONEXIO_CLOUD_MQTT_KEEPALIVE_SEC
+	int "MQTT keepalive interval (seconds)"
+	default 120
+	range 30 600
+	depends on CONEXIO_CLOUD_MQTT
+
+# ── TLS tags (internal — change only on conflict) ─────────────────────────────
+
+config CONEXIO_CLOUD_CA_TAG
+	int "TLS CA certificate security tag"
+	default 100
+
+config CONEXIO_CLOUD_CERT_TAG
+	int "TLS device certificate security tag"
+	default 101
+	depends on CONEXIO_CLOUD_MQTT
+
+config CONEXIO_CLOUD_KEY_TAG
+	int "TLS private key security tag"
+	default 102
+	depends on CONEXIO_CLOUD_MQTT
+
+config CONEXIO_CLOUD_HTTP_CA_TAG
+	int "TLS CA security tag (HTTP transport)"
+	default 103
+	depends on CONEXIO_CLOUD_HTTP
+
+# ── Stack ─────────────────────────────────────────────────────────────────────
+
+config CONEXIO_CLOUD_THREAD_STACK_SIZE
+	int "SDK background thread stack size"
+	default 4096
+	range 2048 16384
+
+# ── FOTA — Firmware Over-the-Air updates ─────────────────────────────────────
+
+config CONEXIO_CLOUD_FOTA
+	bool "Enable FOTA (Firmware Over-the-Air) support"
+	depends on CONEXIO_CLOUD_MQTT
+	select FOTA_DOWNLOAD
+	select FOTA_DOWNLOAD_PROGRESS_EVT
+	select BOOTLOADER_MCUBOOT
+	select IMG_MANAGER
+	select MCUBOOT_IMG_MANAGER
+	select DFU_TARGET
+	select DFU_TARGET_MCUBOOT
+	select DOWNLOAD_CLIENT
+	help
+	  Enables firmware update via AWS IoT Jobs and MCUboot.
+	  When a job is created on the Conexio Console Firmware page, the SDK
+	  receives a FIRMWARE_UPDATE command, downloads the binary from the
+	  pre-signed S3 URL, and installs it via MCUboot on next reboot.
+	  Requires a dual-bank MCUboot partition layout in the board DTS.
+	  Include <fota.h> in your application for the event callback type.
+
+config CONEXIO_CLOUD_FOTA_DOWNLOAD_TIMEOUT_SEC
+	int "FOTA download timeout (seconds)"
+	default 300
+	range 60 900
+	depends on CONEXIO_CLOUD_FOTA
+	help
+	  Maximum seconds to wait for a firmware binary to download before
+	  aborting. Handled by CONFIG_FOTA_DOWNLOAD_TIMEOUT_MS in NCS v3.2.1.
+	  This option is kept for documentation purposes but is no longer passed
+	  to fota_download_start() (whose 5th argument is fragment_size, not timeout).
+	  Configure the actual timeout via CONFIG_FOTA_DOWNLOAD_TIMEOUT_MS in prj.conf.
+
+# ── Offline buffer — flash-backed telemetry buffering ────────────────────────
+
+config CONEXIO_CLOUD_OFFLINE_BUFFER
+	bool "Enable offline telemetry buffer"
+	select NVS
+	select FLASH
+	select FLASH_PAGE_LAYOUT
+	select FLASH_MAP
+	select MPU_ALLOW_FLASH_WRITE
+	help
+	  When the device loses cloud connectivity, telemetry payloads are stored
+	  in internal flash using Zephyr NVS. On reconnection, buffered payloads
+	  are replayed to the cloud in chronological order before resuming live
+	  telemetry. Uses a ring buffer — oldest entries are dropped when full.
+	  Include <offline_buffer.h> in your application.
+
+config CONEXIO_CLOUD_OFFLINE_BUFFER_SIZE
+	int "Maximum number of payloads to buffer"
+	default 100
+	range 10 500
+	depends on CONEXIO_CLOUD_OFFLINE_BUFFER
+	help
+	  Each entry holds one complete telemetry JSON payload (up to 512 bytes).
+	  100 entries at a 60s interval = ~100 minutes of offline coverage.
+
+config CONEXIO_CLOUD_OFFLINE_REPLAY_BATCH
+	int "Payloads to replay per reconnect session"
+	default 10
+	range 1 50
+	depends on CONEXIO_CLOUD_OFFLINE_BUFFER
+	help
+	  How many buffered payloads to send after each reconnect before
+	  switching back to live telemetry. Prevents replay storms.
+
+# ── Power manager — LTE PSM / eDRX ───────────────────────────────────────────
+
+config CONEXIO_CLOUD_PSM
+	bool "Enable LTE Power Saving Mode (PSM) support"
+	help
+	  Negotiates PSM or eDRX with the LTE network to minimise current draw
+	  between telemetry transmissions. Typical improvement: 5–20x battery
+	  life versus always-on connected mode.
+	  PSM current: ~2–3 µA sleep vs ~6–10 mA idle connected.
+	  Include <power_mgr.h> in your application.
+
+config CONEXIO_CLOUD_PSM_TAU_SEC
+	int "PSM Tracking Area Update timer (seconds)"
+	default 3600
+	range 60 86400
+	depends on CONEXIO_CLOUD_PSM
+	help
+	  How often the modem sends a keepalive (T3412 timer) to the network.
+	  Set to at least 2× your telemetry interval to avoid extra radio wakeups.
+
+config CONEXIO_CLOUD_PSM_ACTIVE_TIME_SEC
+	int "PSM active window (seconds)"
+	default 10
+	range 2 60
+	depends on CONEXIO_CLOUD_PSM
+	help
+	  How long the modem stays awake after waking (T3324 timer).
+	  Must be long enough for LTE re-registration + full MQTT publish cycle.
+	  10 seconds is sufficient for most use cases.
+
+config CONEXIO_CLOUD_EDRX
+	bool "Enable eDRX instead of PSM"
+	default n
+	depends on CONEXIO_CLOUD_PSM
+	help
+	  Use extended Discontinuous Reception (eDRX) instead of PSM.
+	  eDRX provides faster command reception latency at the cost of higher
+	  idle current. Do not enable both PSM and eDRX simultaneously.
+
+# ── Retry / watchdog — exponential backoff + hardware watchdog ───────────────
+
+config CONEXIO_CLOUD_RETRY
+	bool "Enable exponential backoff retry and hardware watchdog"
+	select WATCHDOG
+	help
+	  Manages cloud reconnection attempts with jittered exponential backoff
+	  to avoid reconnect storms after network outages. Also arms the hardware
+	  watchdog so the device automatically reboots if the main loop stalls
+	  (catches modem hangs, deadlocks, and infinite retry loops).
+	  Include <retry.h> in your application.
+
+config CONEXIO_CLOUD_RETRY_BASE_SEC
+	int "Base retry interval (seconds)"
+	default 5
+	range 1 60
+	depends on CONEXIO_CLOUD_RETRY
+	help
+	  Initial wait before the first reconnection attempt.
+	  Doubles on each failure: 5s → 10s → 20s → 40s → ... → max.
+
+config CONEXIO_CLOUD_RETRY_MAX_SEC
+	int "Maximum retry interval (seconds)"
+	default 300
+	range 30 3600
+	depends on CONEXIO_CLOUD_RETRY
+	help
+	  Retry interval cap (5 minutes by default).
+
+config CONEXIO_CLOUD_RETRY_MAX_ATTEMPTS
+	int "Maximum consecutive failures before reboot"
+	default 10
+	range 3 50
+	depends on CONEXIO_CLOUD_RETRY
+	help
+	  Reboot after this many consecutive connection failures.
+	  Catches unrecoverable modem states that only a full power cycle fixes.
+
+config CONEXIO_CLOUD_WATCHDOG_TIMEOUT_SEC
+	int "Hardware watchdog timeout (seconds)"
+	default 600
+	range 60 3600
+	depends on CONEXIO_CLOUD_RETRY
+	help
+	  The hardware watchdog fires and reboots the device if retry_kick_watchdog()
+	  has not been called within this window. Call it from your main loop.
+
+endif # CONEXIO_CLOUD
