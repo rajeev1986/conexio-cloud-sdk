@@ -229,7 +229,7 @@ config CONEXIO_CLOUD_FOTA
 	select BOOTLOADER_MCUBOOT
 	select DFU_TARGET
 	select DFU_TARGET_MCUBOOT
-	select DOWNLOAD_CLIENT
+	select DOWNLOADER
 	select STREAM_FLASH
 	help
 	  Enables firmware update via AWS IoT Jobs and MCUboot.
