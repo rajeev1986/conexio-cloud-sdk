@@ -109,19 +109,20 @@ int power_mgr_init(const struct power_mgr_config *cfg)
         char active_str[9];
 
         /* Encode TAU in T3412 format — unit bits [7:5], value bits [4:0]
-         * Unit 010 = 1 minute increments, Unit 001 = 1 hour increments     */
+         * Value must fit in 5 bits (0-31). Clamp before formatting. */
         int tau_hours = cfg->psm_tau_sec / 3600;
         if (tau_hours > 0 && tau_hours <= 31) {
-            snprintf(tau_str, sizeof(tau_str), "01100%03d",
-                     tau_hours); /* unit: 1 hour */
+            snprintf(tau_str, sizeof(tau_str), "01100%02d",
+                     tau_hours); /* unit: 1 hour, value 0-31 */
         } else {
-            snprintf(tau_str, sizeof(tau_str), "00100%03d",
-                     cfg->psm_tau_sec / 60); /* unit: 1 minute */
+            int tau_min = (cfg->psm_tau_sec / 60);
+            tau_min = CLAMP(tau_min, 0, 31); /* T3412 5-bit value */
+            snprintf(tau_str, sizeof(tau_str), "00100%02d", tau_min);
         }
 
-        /* Encode active time in T3324 format (unit: 2s increments) */
-        snprintf(active_str, sizeof(active_str), "00000%03d",
-                 cfg->psm_active_time_sec / 2);
+        /* Encode active time in T3324 format (unit: 2s, value 0-31) */
+        int active_units = CLAMP(cfg->psm_active_time_sec / 2, 0, 31);
+        snprintf(active_str, sizeof(active_str), "00000%02d", active_units);
 
         int ret = lte_lc_psm_req(true);
         if (ret) {
