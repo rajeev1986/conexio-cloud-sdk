@@ -869,16 +869,17 @@ void transport_on_disconnected(void)
 static char *build_payload(void)
 {
     /* ── Timestamp ────────────────────────────────────────────────────── */
-    char timestamp[32];
+    char timestamp[40];
     int64_t unix_ms;
 
     if (date_time_now(&unix_ms) == 0) {
         /* NTP has synced — build a proper ISO-8601 UTC timestamp */
         time_t t = (time_t)(unix_ms / 1000);
         struct tm *tm_val = gmtime(&t);
+        int year = CLAMP(tm_val->tm_year + 1900, 2020, 2099);
         snprintf(timestamp, sizeof(timestamp),
                  "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ",
-                 tm_val->tm_year + 1900, tm_val->tm_mon + 1, tm_val->tm_mday,
+                 year, tm_val->tm_mon + 1, tm_val->tm_mday,
                  tm_val->tm_hour, tm_val->tm_min, tm_val->tm_sec,
                  (int)(unix_ms % 1000));
     } else {
