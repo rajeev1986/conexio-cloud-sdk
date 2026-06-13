@@ -1,0 +1,36 @@
+mainmenu "Conexio Console MQTT Sample"
+
+config CONEXIO_DEVICE_ID
+	string "AWS IoT Thing Name / Device ID"
+	default "my-nrf-device"
+	help
+	  Must match the Thing name you created in AWS IoT Core.
+	  This is also the deviceId sent in every telemetry payload
+	  and used in the MQTT topic: devices/<DEVICE_ID>/telemetry
+
+config CONEXIO_AWS_BROKER_HOSTNAME
+	string "AWS IoT Core MQTT endpoint"
+	default "ENDPOINT.iot.us-east-1.amazonaws.com"
+	help
+	  Get this from:
+	    aws iot describe-endpoint --endpoint-type iot:Data-ATS
+	  Example: abc123xyz.iot.us-east-1.amazonaws.com
+
+config CONEXIO_TELEMETRY_INTERVAL_SEC
+	int "Telemetry publish interval in seconds"
+	default 60
+	range 10 3600
+	help
+	  How often to read sensors and publish telemetry to AWS.
+	  60 = once per minute (good for testing).
+	  3600 = once per hour (good for battery-powered production).
+
+config CONEXIO_MQTT_KEEPALIVE_SEC
+	int "MQTT keepalive interval in seconds"
+	default 120
+	range 30 600
+	help
+	  How often to send a MQTT PINGREQ to keep the connection alive.
+	  Must be less than the AWS IoT idle timeout (default 1200s).
+
+source "Kconfig.zephyr"

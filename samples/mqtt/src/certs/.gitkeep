@@ -1,0 +1,7 @@
+# Place your AWS TLS certificate files here before building.
+# See firmware/mqtt/README.md for instructions.
+#
+# Required files (NOT committed to git — add to .gitignore):
+#   AmazonRootCA1.pem   — AWS Root CA (public, download from amazontrust.com)
+#   device.crt          — Your device certificate from AWS IoT Core
+#   device.key          — Your device private key (keep secret!)

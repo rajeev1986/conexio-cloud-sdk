@@ -1,0 +1,11 @@
+mainmenu "Conexio Advanced Sample App"
+
+# All production-grade feature configuration (PSM, FOTA, offline buffer,
+# retry/watchdog) is now defined in conexio-cloud-sdk-v2/Kconfig under the
+# CONFIG_CONEXIO_CLOUD_* namespace.
+#
+# This Kconfig only provides the top-level menu name.
+# Configure features via CONFIG_CONEXIO_CLOUD_PSM, CONFIG_CONEXIO_CLOUD_FOTA,
+# CONFIG_CONEXIO_CLOUD_OFFLINE_BUFFER, and CONFIG_CONEXIO_CLOUD_RETRY in prj.conf.
+
+source "Kconfig.zephyr"

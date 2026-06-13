@@ -1,0 +1,64 @@
+mainmenu "Conexio Console Fleet Provisioning Sample"
+
+config CONEXIO_AWS_BROKER_HOSTNAME
+	string "AWS IoT Core MQTT endpoint"
+	default "ENDPOINT.iot.us-east-1.amazonaws.com"
+	help
+	  Get this from:
+	    aws iot describe-endpoint --endpoint-type iot:Data-ATS
+	  Example: abc123xyz.iot.us-east-1.amazonaws.com
+	  This is the SAME endpoint for both provisioning and normal operation.
+	  It is shared by all devices — no per-device configuration needed here.
+
+config CONEXIO_FLEET_TEMPLATE_NAME
+	string "AWS IoT Fleet Provisioning template name"
+	default "ConexioFleetTemplate"
+	help
+	  Must match the template name you created in AWS IoT (or the one
+	  created by deploy.sh / CDK). This is embedded in the MQTT topic:
+	    $aws/provisioning-templates/<name>/provision/json
+
+config CONEXIO_TELEMETRY_INTERVAL_SEC
+	int "Telemetry publish interval in seconds"
+	default 60
+	range 10 3600
+	help
+	  How often to read sensors and publish telemetry to AWS after
+	  provisioning is complete.
+
+config CONEXIO_MQTT_KEEPALIVE_SEC
+	int "MQTT keepalive interval in seconds"
+	default 120
+	range 30 600
+
+# ── Credential storage tags in modem secure storage ──────────────────────────
+# Claim creds (tags 10-12): bootstrap certs embedded in firmware, read-only.
+# Device creds (tags 20-22): issued by AWS during provisioning, written once.
+# Keeping them in separate tag ranges makes it easy to check which phase
+# the device is in, and to wipe only the claim certs after provisioning.
+
+config CONEXIO_CLAIM_CA_TAG
+	int "Modem TLS tag for Root CA (claim phase)"
+	default 10
+
+config CONEXIO_CLAIM_CERT_TAG
+	int "Modem TLS tag for claim certificate"
+	default 11
+
+config CONEXIO_CLAIM_KEY_TAG
+	int "Modem TLS tag for claim private key"
+	default 12
+
+config CONEXIO_DEVICE_CA_TAG
+	int "Modem TLS tag for Root CA (device phase)"
+	default 20
+
+config CONEXIO_DEVICE_CERT_TAG
+	int "Modem TLS tag for device certificate (issued by AWS)"
+	default 21
+
+config CONEXIO_DEVICE_KEY_TAG
+	int "Modem TLS tag for device private key (issued by AWS)"
+	default 22
+
+source "Kconfig.zephyr"
