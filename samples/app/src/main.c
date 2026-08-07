@@ -28,6 +28,7 @@
 #include <conexio_cloud/conexio_cloud.h>
 
 #include <zephyr/kernel.h>
+#include <zephyr/random/random.h>
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
@@ -48,10 +49,20 @@ static bool g_debug_mode      = false;
  *       return sensor_value_to_double(&val);
  *   }
  *
- * Return NAN to skip a reading for a given cycle (sensor unavailable).
- */
-static double read_temperature(void *arg) { ARG_UNUSED(arg); return 22.5; }
-static double read_humidity(void *arg)    { ARG_UNUSED(arg); return 61.0; }
+/* Return NAN to skip a reading for a given cycle (sensor unavailable). */
+static double read_temperature(void *arg)
+{
+    ARG_UNUSED(arg);
+    /* Simulated: random value in [22.0, 35.0] °C with 0.1 resolution */
+    return 22.0 + (double)(sys_rand32_get() % 131) * 0.1;
+}
+
+static double read_humidity(void *arg)
+{
+    ARG_UNUSED(arg);
+    /* Simulated: random value in [50.0, 80.0] % with 0.1 resolution */
+    return 50.0 + (double)(sys_rand32_get() % 301) * 0.1;
+}
 
 /* ── Command handlers — hardware-specific only ────────────────────────── */
 /*
@@ -166,11 +177,22 @@ int main(void)
         return -1;
     }
 
+    /* ── Immediate boot publish ───────────────────────────────────────
+     * Push all telemetry right after reset — boot-once metrics
+     * (_reboot_reason, _modem_fw, _lte_connect_ms, etc.) are included
+     * in this first payload. The SDK background thread will then wait
+     * CONEXIO_CLOUD_INTERVAL_SEC (1800s) before the next publish. */
+    LOG_INF("Boot publish — sending telemetry immediately after reset");
+    ret = conexio_cloud_publish();
+    if (ret) {
+        LOG_WRN("Boot publish failed (%d) — will retry at next interval", ret);
+    }
+
     /* ── Main loop — just sleep ───────────────────────────────────────
-     * The SDK background thread reads sensors, publishes, manages PSM,
-     * buffers offline data, kicks the watchdog, and handles reconnects.
-     * conexio_cloud_get_interval_sec() reflects any runtime changes from
-     * SET_INTERVAL or the telemetryIntervalSec OTA Config setting.     */
+     * The SDK background thread reads sensors, publishes every
+     * INTERVAL_SEC, manages PSM, buffers offline data, and handles
+     * reconnects. conexio_cloud_get_interval_sec() reflects any runtime
+     * changes from SET_INTERVAL or the telemetryIntervalSec OTA setting. */
     while (1) {
         k_sleep(K_SECONDS(conexio_cloud_get_interval_sec()));
     }
