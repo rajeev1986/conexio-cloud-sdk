@@ -37,6 +37,9 @@ LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
 static int  g_alert_threshold = 80;
 static bool g_debug_mode      = false;
 
+/* Semaphore given when MQTT connects — gates the immediate boot publish. */
+static K_SEM_DEFINE(cloud_connected_sem, 0, 1);
+
 /* ── Sensor callbacks ─────────────────────────────────────────────────── */
 /*
  * These are called by the SDK background thread before each publish.
@@ -127,6 +130,8 @@ static void cloud_event_handler(const struct conexio_cloud_event *evt)
     case CONEXIO_CLOUD_EVT_CONNECTED:
         LOG_INF("Connected — %s | SDK %s",
                 conexio_cloud_device_id(), conexio_cloud_version());
+        /* Unblock the boot publish in main() */
+        k_sem_give(&cloud_connected_sem);
         /* TODO: status LED green */
         break;
     case CONEXIO_CLOUD_EVT_DISCONNECTED:
@@ -178,14 +183,20 @@ int main(void)
     }
 
     /* ── Immediate boot publish ───────────────────────────────────────
-     * Push all telemetry right after reset — boot-once metrics
-     * (_reboot_reason, _modem_fw, _lte_connect_ms, etc.) are included
-     * in this first payload. The SDK background thread will then wait
-     * CONEXIO_CLOUD_INTERVAL_SEC (1800s) before the next publish. */
-    LOG_INF("Boot publish — sending telemetry immediately after reset");
-    ret = conexio_cloud_publish();
-    if (ret) {
-        LOG_WRN("Boot publish failed (%d) — will retry at next interval", ret);
+     * Wait for the SDK background thread to establish the MQTT connection,
+     * then push all telemetry immediately — boot-once metrics
+     * (_reboot_reason, _modem_fw, _lte_connect_ms, etc.) are included.
+     * After this the SDK background thread publishes every INTERVAL_SEC. */
+    LOG_INF("Waiting for MQTT connection before boot publish...");
+    int sem_ret = k_sem_take(&cloud_connected_sem, K_SECONDS(60));
+    if (sem_ret == 0) {
+        LOG_INF("Boot publish — sending telemetry immediately after reset");
+        int pub_ret = conexio_cloud_publish();
+        if (pub_ret) {
+            LOG_WRN("Boot publish failed (%d) — will retry at next interval", pub_ret);
+        }
+    } else {
+        LOG_WRN("MQTT connect timeout — skipping boot publish");
     }
 
     /* ── Main loop — just sleep ───────────────────────────────────────
