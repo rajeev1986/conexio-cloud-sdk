@@ -15,9 +15,7 @@ menuconfig CONEXIO_CLOUD
 	select LTE_LINK_CONTROL
 	select NETWORKING
 	select NET_SOCKETS
-	select NET_SOCKETS_POSIX_NAMES
 	select NET_SOCKETS_OFFLOAD
-	select NET_SECURITY
 	select TLS_CREDENTIALS
 	select MODEM_KEY_MGMT
 	select CJSON_LIB
@@ -83,6 +81,47 @@ config CONEXIO_CLOUD_CONFIG_CACHE_SEC
 	help
 	  How long to cache the fetched config before re-fetching.
 	  Set to 3600 (1 hour) by default — the config changes rarely.
+
+# ── Static broker override (skip config_fetch) ───────────────────────────────
+# Use this to bypass the Conexio config service for development/testing.
+# Set CONEXIO_CLOUD_STATIC_BROKER to your AWS IoT endpoint and
+# CONEXIO_CLOUD_STATIC_ROOT_CA_URL to where the Root CA should be fetched from.
+
+config CONEXIO_CLOUD_STATIC_BROKER_ENABLED
+	bool "Use static broker (bypasses config service)"
+	default n
+	help
+	  Enable to bypass config.conexio.io and connect directly to a
+	  hardcoded MQTT broker. Set the hostname below.
+
+config CONEXIO_CLOUD_STATIC_BROKER
+	string "Static MQTT broker hostname"
+	default "a2t1ogibbsuad8-ats.iot.us-east-1.amazonaws.com"
+	depends on CONEXIO_CLOUD_STATIC_BROKER_ENABLED
+	help
+	  AWS IoT Core MQTT endpoint to connect to when static broker is enabled.
+
+config CONEXIO_CLOUD_STATIC_ROOT_CA_URL
+	string "Static Root CA download URL"
+	default "https://www.amazontrust.com/repository/AmazonRootCA1.pem"
+	depends on CONEXIO_CLOUD_STATIC_BROKER_ENABLED
+	help
+	  URL to download the AWS Root CA PEM when using a static broker.
+
+config CONEXIO_CLOUD_STATIC_DEVICE_ID_ENABLED
+	bool "Use static device ID (overrides IMEI)"
+	default n
+	help
+	  Enable to use a hardcoded AWS IoT Thing name instead of the modem
+	  IMEI as the device ID. Useful for testing with a manually created Thing.
+
+config CONEXIO_CLOUD_STATIC_DEVICE_ID
+	string "Static device ID / AWS IoT Thing name"
+	default "stratus-pro-001"
+	depends on CONEXIO_CLOUD_STATIC_DEVICE_ID_ENABLED
+	help
+	  Device ID sent in telemetry and used in MQTT topics.
+	  Must match the AWS IoT Thing name exactly.
 
 # ── Telemetry ─────────────────────────────────────────────────────────────────
 
@@ -229,11 +268,10 @@ config CONEXIO_CLOUD_FOTA
 	select FOTA_DOWNLOAD
 	select FOTA_DOWNLOAD_PROGRESS_EVT
 	select BOOTLOADER_MCUBOOT
-	select IMG_MANAGER
-	select MCUBOOT_IMG_MANAGER
 	select DFU_TARGET
 	select DFU_TARGET_MCUBOOT
-	select DOWNLOAD_CLIENT
+	select DOWNLOADER
+	select STREAM_FLASH
 	help
 	  Enables firmware update via AWS IoT Jobs and MCUboot.
 	  When a job is created on the Conexio Console Firmware page, the SDK

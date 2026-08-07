@@ -301,7 +301,7 @@ static void poll_and_execute_commands(void)
             LOG_INF("Executing command: %s (id=%s)", cmd_name, command_id);
             /* Dispatch to registered command handlers in the application */
             transport_on_message(msg_json, strlen(msg_json));
-            cJSON_FreeString(msg_json);
+            cJSON_free(msg_json);
         }
 
         /* ACK the command so the dashboard shows 'acknowledged' */
@@ -345,7 +345,7 @@ static void poll_and_execute_commands(void)
                     LOG_DBG("Command ACK sent: id=%s", command_id);
                 }
             }
-            cJSON_FreeString(ack_json);
+            cJSON_free(ack_json);
         }
     }
 
@@ -444,7 +444,7 @@ static void poll_pending_config(void)
 
         if (msg_json) {
             transport_on_message(msg_json, strlen(msg_json));
-            cJSON_FreeString(msg_json);
+            cJSON_free(msg_json);
         }
     }
 
@@ -489,7 +489,7 @@ static void poll_pending_config(void)
                         version, config_id ? config_id : "?");
             }
         }
-        cJSON_FreeString(ack_json);
+        cJSON_free(ack_json);
     }
 
     cJSON_Delete(root);

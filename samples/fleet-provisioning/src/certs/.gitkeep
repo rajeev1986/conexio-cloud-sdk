@@ -1,0 +1,10 @@
+# Place the following three files here before building:
+#
+#   AmazonRootCA1.pem  — AWS Root CA (same for every project)
+#   claim.crt          — Claim (bootstrap) certificate from AWS IoT
+#   claim.key          — Claim private key from AWS IoT
+#
+# These are SHARED across all devices — one set for the entire fleet.
+# See README.md for setup instructions.
+#
+# DO NOT commit real certificate files to git.

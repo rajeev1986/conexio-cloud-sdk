@@ -38,7 +38,8 @@
 #include <zephyr/net/tls_credentials.h>  /* sec_tag_t, TLS_SEC_TAG_LIST   */
 #include <zephyr/logging/log.h>
 #include <string.h>
-#include <cJSON.h>                        /* for command/config ACK payloads */
+#include <stdio.h>
+#include <cJSON.h>
 #include <cJSON_os.h>
 #include "../transport.h"
 #include "../config_fetch.h"
@@ -61,15 +62,18 @@ static const sec_tag_t sec_tags[] = {
 
 /* ── Module-level state ───────────────────────────────────────────────────*/
 
-static struct mqtt_client     client;        /* Zephyr MQTT client context */
-static struct sockaddr_storage broker_addr;  /* Resolved broker address    */
+static struct mqtt_client     client;
+static struct sockaddr_storage broker_addr;
 
-/* MQTT Tx/Rx buffers — sizing per Zephyr MQTT docs */
 static uint8_t rx_buf[1024];
 static uint8_t tx_buf[1024];
-static uint8_t payload_buf[512]; /* Scratch buffer for incoming payloads   */
+static uint8_t payload_buf[512];
 
-static bool connected = false;   /* Set in CONNACK, cleared in DISCONNECT  */
+static bool connected = false;
+
+/* Semaphore signalled when CONNACK arrives — lets transport_connect() block
+ * until the connection is established rather than returning immediately. */
+static K_SEM_DEFINE(connack_sem, 0, 1);
 
 /* Topic strings built at init from the device ID */
 static char telemetry_topic[64]; /* devices/<id>/telemetry                 */
@@ -126,7 +130,7 @@ static void publish_command_ack(const char *command_id, const char *sk,
     } else {
         LOG_DBG("Command ACK published: id=%s", command_id);
     }
-    cJSON_FreeString(json);
+    cJSON_free(json);
 }
 
 static void publish_config_ack(const char *config_id, bool success)
@@ -159,7 +163,7 @@ static void publish_config_ack(const char *config_id, bool success)
         LOG_DBG("Config ACK published: id=%s success=%d",
                 config_id ? config_id : "(none)", (int)success);
     }
-    cJSON_FreeString(json);
+    cJSON_free(json);
 }
 
 /* ── MQTT event handler ───────────────────────────────────────────────────
@@ -191,6 +195,8 @@ static void mqtt_evt_handler(struct mqtt_client *c, const struct mqtt_evt *evt)
         if (evt->result == 0) {
             LOG_INF("MQTT connected to %s", g_broker_host);
             connected = true;
+            /* Unblock transport_connect() which is waiting for this */
+            k_sem_give(&connack_sem);
 
             /* Subscribe to both topics the cloud publishes to this device:
              *   commands — Commands page and Schedules page
@@ -374,18 +380,18 @@ int transport_init_with_config(const char *device_id,
 int transport_connect(void)
 {
     /* DNS resolution — converts hostname to IPv4 address */
-    struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM };
-    struct addrinfo *res;
+    struct zsock_addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM };
+    struct zsock_addrinfo *res;
     char port_str[8];
     snprintf(port_str, sizeof(port_str), "%d", BROKER_PORT);
 
-    int ret = getaddrinfo(g_broker_host, port_str, &hints, &res);
+    int ret = zsock_getaddrinfo(g_broker_host, port_str, &hints, &res);
     if (ret) {
         LOG_ERR("DNS resolution failed for %s (%d)", g_broker_host, ret);
         return -ENOENT;
     }
     memcpy(&broker_addr, res->ai_addr, res->ai_addrlen);
-    freeaddrinfo(res);
+    zsock_freeaddrinfo(res);
 
     /* Retrieve device ID from the SDK core — used as the MQTT client ID.
      * AWS IoT Core requires client ID == IoT Thing name for policy enforcement. */
@@ -419,15 +425,43 @@ int transport_connect(void)
     tls->hostname       = g_broker_host;            /* SNI hostname         */
     tls->session_cache  = TLS_SESSION_CACHE_DISABLED; /* Fresh TLS each time */
 
-    /* Initiate connection — CONNACK will arrive asynchronously in the
-     * event handler and set connected = true via transport_on_connected(). */
+    /* NCS v3.2.1: mqtt_disconnect() does NOT reset transport.tls.sock to -1.
+     * If this is a reconnect, the stale fd causes -EADDRINUSE on next connect. */
+    client.transport.tls.sock = -1;
+
+    /* Reset the CONNACK semaphore before connecting */
+    k_sem_reset(&connack_sem);
+
     ret = mqtt_connect(&client);
     if (ret) {
         LOG_ERR("mqtt_connect() failed (%d)", ret);
-    } else {
-        LOG_INF("Connecting to MQTT broker %s:%d", g_broker_host, BROKER_PORT);
+        return ret;
     }
-    return ret;
+    LOG_INF("Connecting to MQTT broker %s:%d", g_broker_host, BROKER_PORT);
+
+    /* Poll the socket until CONNACK arrives (or timeout after 10s).
+     * Without this loop the cloud thread would call transport_connect()
+     * again immediately since connected==false, causing -EADDRINUSE. */
+    int64_t deadline = k_uptime_get() + 10000;
+    while (!connected && k_uptime_get() < deadline) {
+        struct zsock_pollfd pfd = {
+            .fd     = client.transport.tls.sock,
+            .events = ZSOCK_POLLIN,
+        };
+        int rc = zsock_poll(&pfd, 1, 500);
+        if (rc > 0 && (pfd.revents & ZSOCK_POLLIN)) {
+            mqtt_input(&client);
+        }
+    }
+
+    if (!connected) {
+        LOG_ERR("CONNACK timeout — broker did not respond within 10s");
+        mqtt_disconnect(&client, NULL);
+        client.transport.tls.sock = -1;
+        return -ETIMEDOUT;
+    }
+
+    return 0;
 }
 
 /* transport_disconnect — close the MQTT session gracefully.

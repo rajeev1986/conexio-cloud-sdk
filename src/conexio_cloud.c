@@ -89,9 +89,11 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <string.h>
-#include <cJSON.h>                   /* JSON serialisation for telemetry   */
-#include <cJSON_os.h>                /* Zephyr memory adapter for cJSON    */
-#include <modem/modem_info.h>         /* IMEI, RSRP, SNR from modem         */
+#include <stdio.h>
+#include <cJSON.h>
+#include <cJSON_os.h>
+#include <modem/nrf_modem_lib.h>
+#include <modem/modem_info.h>
 #include <date_time.h>                /* NTP time sync + ISO-8601 timestamp */
 #include <math.h>                     /* isnan() for sensor callback return */
 
@@ -242,7 +244,7 @@ static bool g_ntp_synced = false;
 
 static void ntp_event_handler(const struct date_time_evt *evt)
 {
-    if (evt->type == DATE_TIME_EVT_TYPE_SNTP_OBTAINED) {
+    if (evt->type == DATE_TIME_OBTAINED_NTP || evt->type == DATE_TIME_OBTAINED_MODEM) {
         LOG_INF("NTP synced");
         g_ntp_synced = true;
         k_sem_give(&ntp_ready_sem);
@@ -431,6 +433,8 @@ static void reboot_reason_init(void)
     LOG_DBG("CONFIG_HWINFO not set — add to prj.conf for reboot reason tracking");
 }
 #endif /* CONFIG_HWINFO */
+
+/* ── Cloud background thread ─────────────────────────────────────────────
  *
  * Spawned at the end of conexio_cloud_init().
  * Runs at the lowest application priority so it doesn't starve user threads.
@@ -596,6 +600,7 @@ static enum conexio_setting_status builtin_on_interval_setting(int32_t value, vo
 
 /* Default FOTA event handler — just logs progress.
  * Applications can supply their own via conexio_cloud_set_fota_cb(). */
+#if defined(CONFIG_CONEXIO_CLOUD_FOTA)
 static fota_event_cb_t g_fota_user_cb = NULL;
 
 static void sdk_fota_event_handler(const struct fota_event *evt)
@@ -624,7 +629,7 @@ static void builtin_on_firmware_update(const char *payload_json, void *arg)
         char *doc_str = cJSON_PrintUnformatted(doc);
         if (doc_str) {
             fota_handle_command(job_id, doc_str);
-            cJSON_FreeString(doc_str);
+            cJSON_free(doc_str);
         }
     }
     cJSON_Delete(p);
@@ -796,7 +801,7 @@ void transport_on_message(const char *json_str, size_t len)
             char *payload_json = payload_item
                 ? cJSON_PrintUnformatted(payload_item) : NULL;
             dispatch_command(name, payload_json);
-            if (payload_json) cJSON_FreeString(payload_json);
+            if (payload_json) cJSON_free(payload_json);
         }
 
     } else if (strcmp(type, "config") == 0) {
@@ -861,21 +866,23 @@ void transport_on_disconnected(void)
  * }
  *
  * Called by conexio_cloud_publish() in the background thread.
- * Returns a heap-allocated string — caller must cJSON_FreeString() it.
+ * Returns a heap-allocated string — caller must cJSON_free() it.
  */
 static char *build_payload(void)
 {
     /* ── Timestamp ────────────────────────────────────────────────────── */
-    char timestamp[32];
+    char timestamp[40];
     int64_t unix_ms;
 
     if (date_time_now(&unix_ms) == 0) {
         /* NTP has synced — build a proper ISO-8601 UTC timestamp */
         time_t t = (time_t)(unix_ms / 1000);
-        struct tm *tm_val = gmtime(&t);
+        struct tm tm_buf;
+        struct tm *tm_val = gmtime_r(&t, &tm_buf);
+        int year = CLAMP(tm_val->tm_year + 1900, 2020, 2099);
         snprintf(timestamp, sizeof(timestamp),
                  "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ",
-                 tm_val->tm_year + 1900, tm_val->tm_mon + 1, tm_val->tm_mday,
+                 year, tm_val->tm_mon + 1, tm_val->tm_mday,
                  tm_val->tm_hour, tm_val->tm_min, tm_val->tm_sec,
                  (int)(unix_ms % 1000));
     } else {
@@ -1320,7 +1327,7 @@ static void cloud_thread_fn(void *a, void *b, void *c)
                                 LOG_INF("Offline: buffered payload (%d pending)",
                                         offline_buffer_count());
                             }
-                            cJSON_FreeString(payload);
+                            cJSON_free(payload);
                         }
                     }
 #else
@@ -1442,6 +1449,8 @@ int conexio_cloud_register_setting_string(const char *key,
  */
 int conexio_cloud_init(conexio_cloud_event_cb_t cb)
 {
+    int ret = 0;
+
     if (g_initialised) {
         LOG_WRN("conexio_cloud_init() called more than once — ignoring");
         return -EALREADY;
@@ -1451,6 +1460,15 @@ int conexio_cloud_init(conexio_cloud_event_cb_t cb)
     user_cb = cb;
     memset(metric_queue, 0, sizeof(metric_queue));
 
+    /* ── Step 0: Initialise the nRF Modem Library ───────────────────────
+     * Must happen before any modem AT command or LTE call.
+     * nrf_modem_lib_init() is idempotent — safe to call if already done. */
+    ret = nrf_modem_lib_init();
+    if (ret != 0 && ret != -EALREADY) {
+        LOG_ERR("nrf_modem_lib_init() failed (%d)", ret);
+        return ret;
+    }
+
     /* ── Step 1: Reboot counter ─────────────────────────────────────── */
     reboot_counter_init();
 
@@ -1459,35 +1477,58 @@ int conexio_cloud_init(conexio_cloud_event_cb_t cb)
      * may write to NVS, which requires nvs_initialised = true. */
     reboot_reason_init();
 
-    /* ── Step 2: Derive device ID from IMEI ────────────────────────── */
+    /* ── Step 2: Initialise modem info + connectivity stats ─────────────
+     * Must happen before metrics and IMEI read.                            */
     modem_info_init();
-
-    /* Enable connectivity statistics collection so _tx_kb/_rx_kb work.
-     * This starts AT%XCONNSTAT=1 on the modem. Safe to call every boot;
-     * the modem resets the counters when the modem library reinitialises. */
     if (modem_info_connectivity_stats_init() != 0) {
         LOG_WRN("modem_info_connectivity_stats_init failed — _tx_kb/_rx_kb unavailable");
     }
 
-    struct modem_param_info mp;
-    if (modem_info_params_get(&mp) == 0) {
-        char imei[16] = {0};
-        strncpy(imei, mp.device.imei.value_string, sizeof(imei) - 1);
-        for (int i = (int)strlen(imei) - 1; i >= 0; i--) {
-            if (imei[i] <= ' ') imei[i] = '\0'; else break;
+    /* ── Step 2b: Derive device ID ──────────────────────────────────────── *
+     * Production: use the 15-digit modem IMEI (unique per SIM slot).
+     * Testing:    use CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID if set.         */
+#if defined(CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID_ENABLED)
+    strncpy(g_device_id, CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID,
+            sizeof(g_device_id) - 1);
+    g_device_id[sizeof(g_device_id) - 1] = '\0';
+    LOG_INF("Device ID (static override): %s", g_device_id);
+#else
+    {
+        struct modem_param_info mp;
+        if (modem_info_params_get(&mp) == 0) {
+            char imei[16] = {0};
+            strncpy(imei, mp.device.imei.value_string, sizeof(imei) - 1);
+            for (int i = (int)strlen(imei) - 1; i >= 0; i--) {
+                if (imei[i] <= ' ') imei[i] = '\0'; else break;
+            }
+            strncpy(g_device_id, imei, sizeof(g_device_id) - 1);
+        } else {
+            LOG_WRN("IMEI unavailable — using fallback device ID");
+            memcpy(g_device_id, "000000000000000", 15);
+            g_device_id[15] = '\0';
         }
-        /* Device ID is the bare 15-digit IMEI, e.g. "351358815179730".
-         * No prefix so it's clean, universally recognisable, and matches
-         * the imei-index GSI key in the cloud DynamoDB devices table. */
-        strncpy(g_device_id, imei, sizeof(g_device_id) - 1);
-    } else {
-        LOG_WRN("IMEI unavailable — using fallback device ID");
-        strncpy(g_device_id, "000000000000000", sizeof(g_device_id) - 1);
+        LOG_INF("Device ID (IMEI): %s", g_device_id);
     }
-    LOG_INF("Device ID: %s", g_device_id);
+#endif
     LOG_INF("Registered: %d command(s), %d setting(s)", cmd_count, setting_count);
 
-    /* ── Step 3: Retry + watchdog init ─────────────────────────────── */
+    /* ── Step 3: Provision TLS credentials ─────────────────────────────
+     * Must happen BEFORE LTE connects. write_if_absent() only writes when
+     * credentials are absent, so it takes the modem offline only on the
+     * first boot. On subsequent boots it's a no-op (certs already present).
+     * Doing this now avoids dropping LTE mid-session. */
+    {
+        /* Use a dummy config — cert_store now uses embedded certs, not cfg */
+        struct conexio_cloud_config_t dummy_cfg = {0};
+        ret = cert_store_provision_from_config(&dummy_cfg);
+        if (ret) {
+            LOG_ERR("TLS credential provisioning failed (%d)", ret);
+            dispatch_error(ret);
+            return ret;
+        }
+    }
+
+    /* ── Step 4: Retry + watchdog init ─────────────────────────────── */
 #if defined(CONFIG_CONEXIO_CLOUD_RETRY)
     struct retry_config retry_cfg = {
         .base_sec        = CONFIG_CONEXIO_CLOUD_RETRY_BASE_SEC,
@@ -1537,7 +1578,7 @@ int conexio_cloud_init(conexio_cloud_event_cb_t cb)
 
     /* ── Step 6: Connect LTE (if SDK manages it) ────────────────────── */
 #if defined(CONFIG_CONEXIO_CLOUD_MANAGE_LTE)
-    int ret = conexio_lte_connect(CONFIG_CONEXIO_CLOUD_LTE_TIMEOUT_SEC);
+    ret = conexio_lte_connect(CONFIG_CONEXIO_CLOUD_LTE_TIMEOUT_SEC);
     if (ret) {
         LOG_ERR("LTE connection failed (%d)", ret);
         dispatch_error(ret);
@@ -1564,20 +1605,16 @@ int conexio_cloud_init(conexio_cloud_event_cb_t cb)
 
     /* ── Step 7: Fetch cloud config from Conexio config service ─────── */
     struct conexio_cloud_config_t cloud_cfg;
-    int ret = config_fetch(g_device_id, &cloud_cfg);
+    ret = config_fetch(g_device_id, &cloud_cfg);
     if (ret) {
         LOG_ERR("config_fetch() failed (%d)", ret);
         dispatch_error(ret);
         return ret;
     }
 
-    /* ── Step 8: Provision TLS credentials ─────────────────────────── */
-    ret = cert_store_provision_from_config(&cloud_cfg);
-    if (ret) {
-        LOG_ERR("cert_store_provision_from_config() failed (%d)", ret);
-        dispatch_error(ret);
-        return ret;
-    }
+    /* ── Step 8: Provision TLS credentials — already done in Step 3 ─── */
+    /* cert_store_provision_from_config() was called before LTE connect   */
+    /* to avoid dropping LTE mid-session. Nothing to do here.             */
 
     /* ── Step 9: Initialise transport ──────────────────────────────── */
     ret = transport_init_with_config(g_device_id, &cloud_cfg);
@@ -1730,7 +1767,7 @@ int conexio_cloud_publish(void)
     }
 
     int ret = transport_publish(payload, strlen(payload));
-    cJSON_FreeString(payload); /* Always free the heap-allocated JSON string */
+    cJSON_free(payload); /* Always free the heap-allocated JSON string */
 
     if (ret == 0) {
         /* Route PUBLISHED through the SDK internal handler so PSM sleep fires */

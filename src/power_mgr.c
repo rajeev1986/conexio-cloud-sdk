@@ -26,6 +26,7 @@
 LOG_MODULE_REGISTER(power_mgr, LOG_LEVEL_INF);
 
 static bool g_psm_active = false;
+static bool g_psm_sleeping = false;   /* true only while modem is actually in PSM sleep */
 static K_SEM_DEFINE(modem_ready_sem, 0, 1);
 
 /* ── LTE event handler ────────────────────────────────────────────────────── */
@@ -46,12 +47,8 @@ static void lte_evt_handler(const struct lte_lc_evt *const evt)
         }
         break;
 
+#if defined(CONFIG_LTE_LC_PSM_MODULE)
     case LTE_LC_EVT_PSM_UPDATE:
-        /*
-         * Network reports the actual PSM timers it granted.
-         * These may differ from what we requested.
-         * Gated by CONFIG_LTE_LC_PSM_MODULE in NCS v3.2.1.
-         */
         if (evt->psm_cfg.active_time == -1) {
             LOG_WRN("Network did not grant PSM (TAU=%d, active=-1) — "
                     "device will stay connected between transmissions",
@@ -63,22 +60,29 @@ static void lte_evt_handler(const struct lte_lc_evt *const evt)
             g_psm_active = true;
         }
         break;
+#endif /* CONFIG_LTE_LC_PSM_MODULE */
 
+#if defined(CONFIG_LTE_LC_EDRX_MODULE)
     case LTE_LC_EVT_EDRX_UPDATE:
-        /* edrx and ptw are float in NCS v3.2.1 — use %.2f format */
-        LOG_INF("eDRX updated: mode=%d, edrx=%.2fs, ptw=%.2fs",
+        LOG_INF("eDRX updated: mode=%d, edrx=%dms, ptw=%dms",
                 evt->edrx_cfg.mode,
-                (double)evt->edrx_cfg.edrx,
-                (double)evt->edrx_cfg.ptw);
+                (int)(evt->edrx_cfg.edrx * 1000),
+                (int)(evt->edrx_cfg.ptw  * 1000));
         break;
+#endif /* CONFIG_LTE_LC_EDRX_MODULE */
 
+#if defined(CONFIG_LTE_LC_MODEM_SLEEP_MODULE)
     case LTE_LC_EVT_MODEM_SLEEP_ENTER:
-        LOG_DBG("Modem entered sleep (PSM)");
+        LOG_DBG("Modem entered PSM sleep");
+        g_psm_sleeping = true;
         break;
 
     case LTE_LC_EVT_MODEM_SLEEP_EXIT:
-        LOG_DBG("Modem exited sleep");
+        LOG_DBG("Modem exited PSM sleep — giving ready semaphore");
+        g_psm_sleeping = false;
+        k_sem_give(&modem_ready_sem);
         break;
+#endif /* CONFIG_LTE_LC_MODEM_SLEEP_MODULE */
 
     default:
         break;
@@ -109,19 +113,20 @@ int power_mgr_init(const struct power_mgr_config *cfg)
         char active_str[9];
 
         /* Encode TAU in T3412 format — unit bits [7:5], value bits [4:0]
-         * Unit 010 = 1 minute increments, Unit 001 = 1 hour increments     */
+         * Value must fit in 5 bits (0-31). Clamp before formatting. */
         int tau_hours = cfg->psm_tau_sec / 3600;
         if (tau_hours > 0 && tau_hours <= 31) {
-            snprintf(tau_str, sizeof(tau_str), "01100%03d",
-                     tau_hours); /* unit: 1 hour */
+            snprintf(tau_str, sizeof(tau_str), "01100%02d",
+                     tau_hours); /* unit: 1 hour, value 0-31 */
         } else {
-            snprintf(tau_str, sizeof(tau_str), "00100%03d",
-                     cfg->psm_tau_sec / 60); /* unit: 1 minute */
+            int tau_min = (cfg->psm_tau_sec / 60);
+            tau_min = CLAMP(tau_min, 0, 31); /* T3412 5-bit value */
+            snprintf(tau_str, sizeof(tau_str), "00100%02d", tau_min);
         }
 
-        /* Encode active time in T3324 format (unit: 2s increments) */
-        snprintf(active_str, sizeof(active_str), "00000%03d",
-                 cfg->psm_active_time_sec / 2);
+        /* Encode active time in T3324 format (unit: 2s, value 0-31) */
+        int active_units = CLAMP(cfg->psm_active_time_sec / 2, 0, 31);
+        snprintf(active_str, sizeof(active_str), "00000%02d", active_units);
 
         int ret = lte_lc_psm_req(true);
         if (ret) {
@@ -152,14 +157,19 @@ int power_mgr_init(const struct power_mgr_config *cfg)
 int power_mgr_wake(int timeout_sec)
 {
     if (!g_psm_active) {
-        /* PSM not active — modem is always connected, nothing to do */
+        /* PSM not active — modem stays connected, nothing to wait for */
         return 0;
     }
 
-    LOG_DBG("Waiting for modem to wake from PSM (timeout %ds)...", timeout_sec);
+    if (!g_psm_sleeping) {
+        /* PSM is configured but modem is currently awake and registered —
+         * no need to wait. This is the normal state between transmissions
+         * before the T3324 active timer has expired. */
+        return 0;
+    }
 
-    /* The modem wakes autonomously at TAU expiry or on network paging.
-     * We just need to wait for LTE_LC_EVT_NW_REG_STATUS = REGISTERED. */
+    /* Modem is actually in PSM sleep — wait for MODEM_SLEEP_EXIT event */
+    LOG_DBG("Waiting for modem to wake from PSM (timeout %ds)...", timeout_sec);
     int ret = k_sem_take(&modem_ready_sem, K_SECONDS(timeout_sec));
     if (ret == -EAGAIN) {
         LOG_WRN("Modem wake timeout after %ds — continuing anyway", timeout_sec);
@@ -184,7 +194,11 @@ void power_mgr_sleep(void)
 
 bool power_mgr_is_psm_active(void)
 {
-    return g_psm_active;
+    /* Return true only when the modem is actually in PSM sleep,
+     * not just when PSM has been granted by the network. This prevents
+     * the cloud thread from waiting on a wake event when the modem is
+     * already awake and registered. */
+    return g_psm_sleeping;
 }
 
 int power_mgr_get_rssi(void)

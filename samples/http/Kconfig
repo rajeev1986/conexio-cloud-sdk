@@ -1,0 +1,31 @@
+mainmenu "Conexio Console HTTP Sample"
+
+config CONEXIO_DEVICE_ID
+	string "Device ID"
+	default "my-nrf-device"
+	help
+	  The unique device identifier. Sent in every telemetry payload.
+	  Register this ID in the Conexio Console dashboard.
+
+config CONEXIO_API_KEY
+	string "Conexio Console API key"
+	default ""
+	help
+	  Retrieved from AWS Secrets Manager after deployment:
+	    aws secretsmanager get-secret-value \
+	      --secret-id iot-dashboard/device-ingest-api-key \
+	      --query SecretString --output text
+
+config CONEXIO_API_HOST
+	string "API Gateway hostname"
+	default ""
+	help
+	  The hostname portion of your HTTP API URL (without https://).
+	  Example: abc123.execute-api.us-east-1.amazonaws.com
+
+config CONEXIO_TELEMETRY_INTERVAL_SEC
+	int "Telemetry send interval in seconds"
+	default 60
+	range 10 3600
+
+source "Kconfig.zephyr"

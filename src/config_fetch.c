@@ -44,14 +44,15 @@
  */
 
 #include <zephyr/kernel.h>
-#include <zephyr/net/socket.h>           /* POSIX-style BSD sockets        */
-#include <zephyr/net/tls_credentials.h>  /* TLS security tag management    */
-#include <zephyr/net/http/client.h>       /* Lightweight HTTP/1.1 client    */
-#include <modem/modem_key_mgmt.h>         /* Write certs to modem NVM       */
-#include <cJSON.h>                         /* JSON parser                    */
-#include <cJSON_os.h>                      /* Zephyr memory adapter for cJSON */
+#include <zephyr/net/socket.h>
+#include <zephyr/net/tls_credentials.h>
+#include <zephyr/net/http/client.h>
+#include <modem/modem_key_mgmt.h>
+#include <cJSON.h>
+#include <cJSON_os.h>
 #include <zephyr/logging/log.h>
 #include <string.h>
+#include <stdio.h>
 #include "config_fetch.h"
 
 LOG_MODULE_REGISTER(config_fetch, LOG_LEVEL_INF);
@@ -110,26 +111,24 @@ static int     fetch_body_len = 0;   /* Actual bytes copied into fetch_body */
  * We copy the body fragment into fetch_body.  The caller (config_fetch)
  * checks fetch_body_len > 0 to know a valid response arrived.
  */
-static void config_http_response(struct http_response *rsp,
-                                  enum http_final_call final_data,
-                                  void *user_data)
+static int config_http_response(struct http_response *rsp,
+                                 enum http_final_call final_data,
+                                 void *user_data)
 {
     ARG_UNUSED(user_data);
 
     if (final_data == HTTP_DATA_FINAL) {
         if (rsp->http_status_code == 200 && rsp->body_frag_len > 0) {
-            /* Copy body, capped to buffer size.  Null-terminate for cJSON. */
             size_t copy_len = MIN(rsp->body_frag_len, sizeof(fetch_body) - 1);
             memcpy(fetch_body, rsp->body_frag_start, copy_len);
             fetch_body[copy_len] = '\0';
             fetch_body_len = (int)copy_len;
         } else {
-            /* Non-200 response (e.g. 404 device not registered, 429 rate-limit).
-             * Log the status; the caller will handle the empty body. */
             LOG_WRN("Config service returned HTTP %d", rsp->http_status_code);
             fetch_body_len = 0;
         }
     }
+    return 0;
 }
 
 /* ── config_fetch — public entry point ────────────────────────────────────
@@ -151,6 +150,27 @@ static void config_http_response(struct http_response *rsp,
  */
 int config_fetch(const char *imei, struct conexio_cloud_config_t *out)
 {
+    /* ── Static broker override (development / testing) ─────────────────
+     * When CONFIG_CONEXIO_CLOUD_STATIC_BROKER is set in prj.conf, bypass
+     * the config service entirely and return the hardcoded values.
+     */
+#if defined(CONFIG_CONEXIO_CLOUD_STATIC_BROKER_ENABLED)
+    if (!config_valid) {
+        memset(&cached_config, 0, sizeof(cached_config));
+        strncpy(cached_config.mqtt_host,
+                CONFIG_CONEXIO_CLOUD_STATIC_BROKER,
+                sizeof(cached_config.mqtt_host) - 1);
+        strncpy(cached_config.root_ca_url,
+                CONFIG_CONEXIO_CLOUD_STATIC_ROOT_CA_URL,
+                sizeof(cached_config.root_ca_url) - 1);
+        config_valid         = true;
+        config_fetched_at_ms = k_uptime_get();
+        LOG_INF("Static broker override: %s", cached_config.mqtt_host);
+    }
+    memcpy(out, &cached_config, sizeof(*out));
+    return 0;
+#endif
+
     /* ── Cache check ────────────────────────────────────────────────────── */
     if (config_valid) {
         int64_t age_ms = k_uptime_get() - config_fetched_at_ms;
@@ -211,9 +231,9 @@ int config_fetch(const char *imei, struct conexio_cloud_config_t *out)
                      strlen(CONFIG_CONEXIO_CLOUD_CONFIG_HOST));
 
     /* DNS resolution — the modem resolves the hostname via its built-in DNS */
-    struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM };
-    struct addrinfo *res;
-    ret = getaddrinfo(CONFIG_CONEXIO_CLOUD_CONFIG_HOST, "443", &hints, &res);
+    struct zsock_addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM };
+    struct zsock_addrinfo *res;
+    ret = zsock_getaddrinfo(CONFIG_CONEXIO_CLOUD_CONFIG_HOST, "443", &hints, &res);
     if (ret) {
         LOG_ERR("DNS lookup failed for %s", CONFIG_CONEXIO_CLOUD_CONFIG_HOST);
         zsock_close(sock);
@@ -221,7 +241,7 @@ int config_fetch(const char *imei, struct conexio_cloud_config_t *out)
     }
 
     ret = zsock_connect(sock, res->ai_addr, res->ai_addrlen);
-    freeaddrinfo(res);
+    zsock_freeaddrinfo(res);
     if (ret) {
         LOG_ERR("TCP connect to config service failed (%d)", errno);
         zsock_close(sock);
@@ -249,7 +269,7 @@ int config_fetch(const char *imei, struct conexio_cloud_config_t *out)
     LOG_INF("Fetching config: GET https://%s%s",
             CONFIG_CONEXIO_CLOUD_CONFIG_HOST, url);
 
-    ret = http_client_req(sock, &req, K_SECONDS(15), NULL);
+    ret = http_client_req(sock, &req, 15000, NULL);
     zsock_close(sock); /* Always close the socket, even on error */
 
     if (ret < 0 || fetch_body_len == 0) {

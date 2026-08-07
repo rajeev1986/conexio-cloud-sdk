@@ -1,0 +1,51 @@
+mainmenu "Conexio Stratus AWS Fleet Provisioning"
+
+config STRATUS_AWS_ENDPOINT
+	string "AWS IoT Core MQTT endpoint"
+	default "ENDPOINT.iot.us-east-1.amazonaws.com"
+	help
+	  Get with: aws iot describe-endpoint --endpoint-type iot:Data-ATS
+
+config STRATUS_FLEET_TEMPLATE
+	string "AWS IoT Fleet Provisioning template name"
+	default "ConexioFleetTemplate"
+
+config STRATUS_TELEMETRY_INTERVAL_SEC
+	int "Telemetry publish interval (seconds)"
+	default 60
+	range 10 3600
+
+config STRATUS_MQTT_KEEPALIVE
+	int "MQTT keepalive interval (seconds)"
+	default 60
+	range 30 600
+
+# ── Modem TLS security tags ───────────────────────────────────────────────────
+# Claim creds (10-12): embedded bootstrap — shared across all devices.
+# Device creds (20-22): issued by AWS per-device during provisioning.
+
+config STRATUS_CLAIM_CA_TAG
+	int "TLS tag: Root CA for claim phase"
+	default 10
+
+config STRATUS_CLAIM_CERT_TAG
+	int "TLS tag: Claim certificate"
+	default 11
+
+config STRATUS_CLAIM_KEY_TAG
+	int "TLS tag: Claim private key"
+	default 12
+
+config STRATUS_DEVICE_CA_TAG
+	int "TLS tag: Root CA for device phase"
+	default 20
+
+config STRATUS_DEVICE_CERT_TAG
+	int "TLS tag: Device certificate (issued by AWS)"
+	default 21
+
+config STRATUS_DEVICE_KEY_TAG
+	int "TLS tag: Device private key (issued by AWS)"
+	default 22
+
+source "Kconfig.zephyr"

@@ -70,4 +70,13 @@ void fota_confirm(void);
  */
 bool fota_is_active(void);
 
+/**
+ * @brief Handle a FIRMWARE_UPDATE command from the cloud command queue.
+ * Parses the job ID and document and starts the FOTA download.
+ * @param job_id       The IoT Job ID string.
+ * @param job_document The job document JSON string.
+ * @return 0 on success, negative errno on error.
+ */
+int fota_handle_command(const char *job_id, const char *job_document);
+
 #endif /* FOTA_H */
