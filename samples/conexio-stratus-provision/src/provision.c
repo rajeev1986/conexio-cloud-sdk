@@ -49,6 +49,7 @@
 
 #include "provision.h"
 #include "cert_store.h"
+#include <modem/lte_lc.h>
 
 LOG_MODULE_REGISTER(provision, LOG_LEVEL_INF);
 
@@ -485,22 +486,63 @@ void provision_mqtt_evt_handler(struct mqtt_client *client,
             /*
              * Write the certificate to modem tag 21.
              * The private key is already at tag 21 (written by AT%KEYGEN).
-             * We only need to write the public certificate.
+             * modem_key_mgmt_write requires the modem to be offline.
+             * Disconnect MQTT first, then take modem offline to write,
+             * then restore normal (online) mode.
+             *
+             * Wait 500 ms after OFFLINE transition before writing — the modem
+             * needs time to fully deactivate before credential operations are
+             * accepted. Without this, modem_key_mgmt_write can return -EPERM
+             * even though the mode was set correctly.
              */
+            mqtt_disconnect(client, NULL);
+            client->transport.tls.sock = -1;
+
+            LOG_INF("Taking modem offline for cert write...");
+            lte_lc_func_mode_set(LTE_LC_FUNC_MODE_OFFLINE);
+            k_sleep(K_MSEC(500));  /* wait for modem to fully deactivate */
+
+            LOG_INF("Writing device cert to modem (tag %d, len=%zu)...",
+                    CONFIG_STRATUS_DEVICE_CERT_TAG, strlen(s_cert));
             rc = modem_key_mgmt_write(CONFIG_STRATUS_DEVICE_CERT_TAG,
                                        MODEM_KEY_MGMT_CRED_TYPE_PUBLIC_CERT,
                                        s_cert, strlen(s_cert));
+
             if (rc) {
                 LOG_ERR("Failed to write device cert to modem: %d", rc);
+                /* Restore modem to normal mode even on failure so caller
+                 * can clean up properly */
+                lte_lc_func_mode_set(LTE_LC_FUNC_MODE_NORMAL);
                 s_state = PROV_FAILED;
             } else {
                 LOG_INF("Device cert written to modem (tag %d)",
                         CONFIG_STRATUS_DEVICE_CERT_TAG);
-                s_state = PROV_DONE;
+
+                /* Verify the write actually persisted before declaring done.
+                 * modem_key_mgmt_exists works in OFFLINE mode. */
+                bool cert_exists = false;
+                modem_key_mgmt_exists(CONFIG_STRATUS_DEVICE_CERT_TAG,
+                                      MODEM_KEY_MGMT_CRED_TYPE_PUBLIC_CERT,
+                                      &cert_exists);
+                LOG_INF("Cert verify after write: exists=%d", (int)cert_exists);
+
+                /* Leave modem in OFFLINE mode — main.c will call
+                 * lte_lc_power_off() for a clean NVM-flushing shutdown
+                 * before rebooting. Do NOT call NORMAL here; that would
+                 * re-activate LTE only to immediately shut it down. */
+
+                if (!cert_exists) {
+                    LOG_ERR("Cert write reported success but cert not found!");
+                    lte_lc_func_mode_set(LTE_LC_FUNC_MODE_NORMAL);
+                    s_state = PROV_FAILED;
+                } else {
+                    s_state = PROV_DONE;
+                }
             }
 
         } else if (strcmp(topic, topic_register_fail) == 0) {
-            LOG_ERR("RegisterThing REJECTED: %.100s", s_payload_buf);
+            LOG_ERR("RegisterThing REJECTED: %.*s",
+                    (int)MIN(plen, (size_t)300), s_payload_buf);
             s_state = PROV_FAILED;
 
         } else {
@@ -599,12 +641,12 @@ int run_provisioning(const char *device_id, struct mqtt_client *client)
 
     if (strlen(req_str) >= sizeof(pub_buf)) {
         LOG_ERR("CSR request too large: %zu bytes", strlen(req_str));
-        cJSON_FreeString(req_str);
+        cJSON_free(req_str);
         mqtt_disconnect(client, NULL);
         return -ENOMEM;
     }
     strncpy(pub_buf, req_str, sizeof(pub_buf) - 1);
-    cJSON_FreeString(req_str);
+    cJSON_free(req_str);
 
     LOG_INF("Phase 1: publishing CreateCertificateFromCsr (%zu bytes)...",
             strlen(pub_buf));
@@ -687,7 +729,7 @@ int run_provisioning(const char *device_id, struct mqtt_client *client)
 
     LOG_INF("Phase 2: publishing RegisterThing...");
     ret = pub_str(client, topic_register, reg_str);
-    cJSON_FreeString(reg_str);
+    cJSON_free(reg_str);
     if (ret) {
         LOG_ERR("Phase 2: publish failed: %d", ret);
         mqtt_disconnect(client, NULL);

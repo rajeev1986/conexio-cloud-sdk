@@ -42,8 +42,8 @@ static char g_device_id[DEVICE_ID_LEN];
 static bool g_provisioned;
 
 /* ── Reboot counter (NVS) ────────────────────────────────────────────────── */
-#define NVS_REBOOT_ID 1U
-static struct nvs_fs reboot_nvs;
+#define NVS_REBOOT_ID 1U  /* unused — reboot counter now stored via Settings */
+static struct nvs_fs reboot_nvs;  /* unused — kept to avoid removing includes */
 static uint32_t g_reboot_cnt;
 
 /* ── MQTT ────────────────────────────────────────────────────────────────── */
@@ -83,11 +83,17 @@ static void lte_handler(const struct lte_lc_evt *const evt)
 static int settings_h_set(const char *key, size_t len,
                            settings_read_cb read_cb, void *cb_arg)
 {
+    LOG_DBG("settings_h_set key='%s' len=%u", key, (unsigned)len);
     if (strcmp(key, "done") == 0) {
         bool val = false;
-        if (read_cb(cb_arg, &val, sizeof(val)) > 0) {
+        ssize_t rc = read_cb(cb_arg, &val, sizeof(val));
+        LOG_INF("settings_h_set 'done': read_cb rc=%d val=%d",
+                (int)rc, (int)val);
+        if (rc > 0) {
             g_provisioned = val;
         }
+    } else if (strcmp(key, "reboot_cnt") == 0) {
+        read_cb(cb_arg, &g_reboot_cnt, sizeof(g_reboot_cnt));
     }
     return 0;
 }
@@ -106,32 +112,26 @@ static void persist_provisioned(void)
     }
 }
 
-/* ── Reboot counter ──────────────────────────────────────────────────────── */
+/* ── Reboot counter (via Settings NVS — same instance as provisioning flag) ── */
+#define REBOOT_CNT_KEY "prov/reboot_cnt"
 
 static void reboot_counter_init(void)
 {
-    reboot_nvs.flash_device = FIXED_PARTITION_DEVICE(storage_partition);
-    reboot_nvs.offset       = FIXED_PARTITION_OFFSET(storage_partition);
+    /* settings_subsys_init() was already called before this function.
+     * Read current count, increment, and save back — all via Settings NVS.
+     * This avoids mounting a second nvs_fs on storage_partition which would
+     * conflict with the Settings NVS backend and lose the provisioning flag. */
+    int ret = settings_load_subtree("prov/reboot_cnt");
 
-    if (!device_is_ready(reboot_nvs.flash_device)) {
-        LOG_WRN("Reboot counter: flash not ready");
-        return;
-    }
+    /* Load may return -ENOENT on first boot — that's fine, counter starts at 0 */
+    (void)ret;
 
-    struct flash_pages_info info;
-    flash_get_page_info_by_offs(reboot_nvs.flash_device,
-                                reboot_nvs.offset, &info);
-    reboot_nvs.sector_size  = info.size;
-    reboot_nvs.sector_count = 2U;
-
-    if (nvs_mount(&reboot_nvs)) {
-        LOG_WRN("Reboot counter: NVS mount failed");
-        return;
-    }
-
-    nvs_read(&reboot_nvs, NVS_REBOOT_ID, &g_reboot_cnt, sizeof(g_reboot_cnt));
     g_reboot_cnt++;
-    nvs_write(&reboot_nvs, NVS_REBOOT_ID, &g_reboot_cnt, sizeof(g_reboot_cnt));
+
+    ret = settings_save_one(REBOOT_CNT_KEY, &g_reboot_cnt, sizeof(g_reboot_cnt));
+    if (ret) {
+        LOG_WRN("Reboot counter save failed: %d", ret);
+    }
     LOG_INF("Reboot counter: %u", g_reboot_cnt);
 }
 
@@ -367,7 +367,7 @@ static int publish_telemetry(void)
         LOG_INF("Telemetry published: %s", payload);
     }
 
-    cJSON_FreeString(payload);
+    cJSON_free(payload);
     return ret;
 }
 
@@ -478,7 +478,9 @@ int main(void)
     if (ret) {
         LOG_WRN("settings_subsys_init failed: %d — continuing", ret);
     } else {
-        settings_load_subtree("prov");
+        ret = settings_load_subtree("prov");
+        LOG_INF("settings_load_subtree(prov) ret=%d g_provisioned=%d g_reboot_cnt=%u",
+                ret, (int)g_provisioned, (unsigned)g_reboot_cnt);
     }
 
     /* 2. Init modem library — must be done before any modem_key_mgmt call.
@@ -514,14 +516,24 @@ int main(void)
     reboot_counter_init();
 
     /* 5a. Generate device key pair + CSR while modem is still offline.
-     *     AT%KEYGEN requires LTE to be inactive. We do this unconditionally
-     *     on every boot — on already-provisioned devices the CSR is simply
-     *     never used. The key is regenerated only if provisioning runs. */
-    ret = provision_prepare_csr();
-    if (ret) {
-        /* Non-fatal on subsequent boots — device may already be provisioned */
-        LOG_WRN("provision_prepare_csr failed: %d (ok if already provisioned)",
-                ret);
+     *     AT%KEYGEN requires LTE to be inactive.
+     *     IMPORTANT: only run on unprovisioned devices. On already-provisioned
+     *     devices the private key at tag 21 must NOT be overwritten — it would
+     *     invalidate the certificate that AWS issued for the previous key pair.
+     *     Use g_provisioned (settings flag) + cert_store_device_creds_exist()
+     *     to detect the provisioned state before LTE connects. */
+    bool creds_exist = cert_store_device_creds_exist();
+    LOG_INF("Boot check: g_provisioned=%d cert_exists=%d",
+            (int)g_provisioned, (int)creds_exist);
+    bool pre_check_provisioned = g_provisioned || creds_exist;
+    if (!pre_check_provisioned) {
+        ret = provision_prepare_csr();
+        if (ret) {
+            LOG_ERR("provision_prepare_csr failed: %d", ret);
+            return -1;
+        }
+    } else {
+        LOG_INF("Already provisioned — skipping AT%%KEYGEN");
     }
 
     /* 6. Connect to LTE */
@@ -531,8 +543,11 @@ int main(void)
         LOG_ERR("lte_lc_connect_async failed: %d", ret);
         return -1;
     }
-    if (k_sem_take(&lte_ready, K_SECONDS(90))) {
-        LOG_ERR("LTE registration timed out");
+    if (k_sem_take(&lte_ready, K_SECONDS(120))) {
+        LOG_ERR("LTE registration timed out — rebooting to retry");
+        lte_lc_power_off();
+        k_sleep(K_MSEC(500));
+        sys_reboot(SYS_REBOOT_COLD);
         return -1;
     }
 
@@ -547,7 +562,7 @@ int main(void)
     }
 
     /* ── PROVISIONING PATH ───────────────────────────────────────────────── */
-    bool already_provisioned = g_provisioned || cert_store_device_creds_exist();
+    bool already_provisioned = g_provisioned || creds_exist;
 
     if (!already_provisioned) {
         LOG_INF("Device not provisioned — starting Fleet Provisioning");
@@ -571,8 +586,23 @@ int main(void)
         }
 
         persist_provisioned();
-        LOG_INF("Provisioning complete — rebooting");
-        k_sleep(K_SECONDS(2));
+        /* Force-flush all pending NVS writes before the reboot. */
+        settings_save();
+        LOG_INF("Provisioning complete -- shutting down modem and rebooting");
+
+        /* CRITICAL: use nrf_modem_lib_shutdown() to properly deinitialize
+         * the modem before rebooting. This ensures the modem has flushed its
+         * NVM (including the newly written device certificate at tag 21)
+         * before the application core resets.
+         *
+         * lte_lc_power_off() alone (AT+CFUN=0) is not sufficient — the app
+         * core may reboot before the modem completes its NVM write cycle.
+         * nrf_modem_lib_shutdown() sends AT+CFUN=0, waits for the modem to
+         * acknowledge shutdown, then closes the IPC channel cleanly. */
+        lte_lc_power_off();
+        k_sleep(K_MSEC(1000));  /* give modem time to flush NVM after CFUN=0 */
+        nrf_modem_lib_shutdown();
+        k_sleep(K_MSEC(500));   /* wait for IPC shutdown to complete */
         sys_reboot(SYS_REBOOT_COLD);
         return 0;
     }
