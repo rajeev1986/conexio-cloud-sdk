@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <stdlib.h>
 
 #include "cert_store.h"
 #include "provision.h"
@@ -335,28 +336,54 @@ static int publish_telemetry(void)
 
     int16_t rssi = read_rssi();
 
-    cJSON *root    = cJSON_CreateObject();
-    cJSON *metrics = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "deviceId",  g_device_id);
-    cJSON_AddStringToObject(root, "timestamp", ts);
-    cJSON_AddItemToObject(root, "metrics", metrics);
-    cJSON_AddNumberToObject(metrics, "temperature", 22.5);   /* replace with real sensor */
-    cJSON_AddNumberToObject(metrics, "humidity",    61.0);   /* replace with real sensor */
-    if (rssi != INT16_MIN) {
-        cJSON_AddNumberToObject(metrics, "_rssi", (double)rssi);
-    }
-    cJSON_AddNumberToObject(metrics, "_reboot_cnt", (double)g_reboot_cnt);
+    /* Build payload manually with snprintf to avoid cJSON float-printing
+     * issues with Zephyr's minimal libc (%g not fully supported → *float*).
+     * Values are formatted as fixed-point decimals directly. */
+    static char payload[512];
+    int len;
 
-    char *payload = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    if (!payload) return -ENOMEM;
+    /* Simulated sensor readings — random within realistic ranges.
+     * Temperature: 20.0–35.0 °C (1 decimal place)
+     * Humidity:    40–75 % RH  (integer) */
+    uint32_t seed = (uint32_t)k_uptime_get_32();
+    int temp_int  = 20 + (int)(seed         % 16); /* 20–35 integer part */
+    int temp_dec  = (int)((seed >> 4)       % 10); /* 0–9 decimal part */
+    int humidity  = 40 + (int)((seed >> 8)  % 36); /* 40–75 */
+
+    if (rssi != INT16_MIN) {
+        len = snprintf(payload, sizeof(payload),
+            "{\"deviceId\":\"%s\","
+            "\"timestamp\":\"%s\","
+            "\"metrics\":{"
+            "\"temperature\":%d.%d,"
+            "\"humidity\":%d,"
+            "\"_rssi\":%d,"
+            "\"_reboot_cnt\":%u}}",
+            g_device_id, ts, temp_int, temp_dec, humidity,
+            (int)rssi, (unsigned)g_reboot_cnt);
+    } else {
+        len = snprintf(payload, sizeof(payload),
+            "{\"deviceId\":\"%s\","
+            "\"timestamp\":\"%s\","
+            "\"metrics\":{"
+            "\"temperature\":%d.%d,"
+            "\"humidity\":%d,"
+            "\"_reboot_cnt\":%u}}",
+            g_device_id, ts, temp_int, temp_dec, humidity,
+            (unsigned)g_reboot_cnt);
+    }
+
+    if (len < 0 || len >= (int)sizeof(payload)) {
+        LOG_ERR("Telemetry payload too large or format error");
+        return -ENOMEM;
+    }
 
     struct mqtt_publish_param msg = {
         .message.topic.qos        = MQTT_QOS_1_AT_LEAST_ONCE,
         .message.topic.topic.utf8 = (uint8_t *)topic_telemetry,
         .message.topic.topic.size = strlen(topic_telemetry),
         .message.payload.data     = (uint8_t *)payload,
-        .message.payload.len      = strlen(payload),
+        .message.payload.len      = (uint32_t)len,
         .message_id               = (uint16_t)(k_uptime_get_32() & 0xFFFF),
     };
 
@@ -367,7 +394,6 @@ static int publish_telemetry(void)
         LOG_INF("Telemetry published: %s", payload);
     }
 
-    cJSON_free(payload);
     return ret;
 }
 
