@@ -1157,14 +1157,16 @@ skip_modem_metrics:;  /* jump target if modem_info_params_get fails */
     }
 
 #if defined(CONFIG_CONEXIO_CLOUD_AUTO_BATTERY)
-    /* Battery voltage via modem AT%XVBAT — only available after modem init */
+    /* Battery voltage via AT%XVBAT — uses modem_info_get_batt_voltage()
+     * which calls nrf_modem_at_scanf("AT%%XVBAT", "%%XVBAT: %%d", &val)
+     * directly.  More reliable than modem_info_string_get(MODEM_INFO_BATTERY)
+     * + atoi() because it parses the integer in the AT response directly
+     * rather than converting the number back through a string intermediate.
+     * Matches the pattern used in the conexio-stratus-provision mqtt sample. */
     {
-        char bat_buf[16] = {0};
-        if (modem_info_string_get(MODEM_INFO_BATTERY, bat_buf, sizeof(bat_buf)) > 0) {
-            int bat_mv = atoi(bat_buf);
-            if (bat_mv > 0) {
-                cJSON_AddNumberToObject(metrics, "_battery_mv", (double)bat_mv);
-            }
+        int bat_mv = 0;
+        if (modem_info_get_batt_voltage(&bat_mv) == 0 && bat_mv > 0) {
+            cJSON_AddNumberToObject(metrics, "_battery_mv", (double)bat_mv);
         }
     }
 #endif /* CONFIG_CONEXIO_CLOUD_AUTO_BATTERY */
@@ -1477,16 +1479,24 @@ int conexio_cloud_init(conexio_cloud_event_cb_t cb)
      * may write to NVS, which requires nvs_initialised = true. */
     reboot_reason_init();
 
-    /* ── Step 2: Initialise modem info + connectivity stats ─────────────
-     * Must happen before metrics and IMEI read.                            */
+    /* ── Step 2: Initialise modem info ──────────────────────────────────
+     * modem_info_init() registers the AT notification handlers.
+     * Must happen before any modem_info_* call. */
     modem_info_init();
     if (modem_info_connectivity_stats_init() != 0) {
         LOG_WRN("modem_info_connectivity_stats_init failed — _tx_kb/_rx_kb unavailable");
     }
 
-    /* ── Step 2b: Derive device ID ──────────────────────────────────────── *
-     * Production: use the 15-digit modem IMEI (unique per SIM slot).
-     * Testing:    use CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID if set.         */
+    /* ── Step 2b: Derive device ID (IMEI) ───────────────────────────────
+     * modem_info_string_get(MODEM_INFO_IMEI) issues a single AT+CGSN command.
+     * This works in offline/AT-command mode — no LTE registration needed.
+     * (modem_info_params_get() is different: it issues multiple AT commands
+     *  for ALL modem info categories and requires normal functional mode /
+     *  network registration — that is why it failed after nrf_modem_lib_init()
+     *  but before lte_lc_connect_async().)
+     *
+     * The provisioning sample (conexio-stratus-provision/src/main.c) uses
+     * this same function before LTE connects — this is the correct approach. */
 #if defined(CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID_ENABLED)
     strncpy(g_device_id, CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID,
             sizeof(g_device_id) - 1);
@@ -1494,22 +1504,28 @@ int conexio_cloud_init(conexio_cloud_event_cb_t cb)
     LOG_INF("Device ID (static override): %s", g_device_id);
 #else
     {
-        struct modem_param_info mp;
-        if (modem_info_params_get(&mp) == 0) {
-            char imei[16] = {0};
-            strncpy(imei, mp.device.imei.value_string, sizeof(imei) - 1);
-            for (int i = (int)strlen(imei) - 1; i >= 0; i--) {
-                if (imei[i] <= ' ') imei[i] = '\0'; else break;
-            }
-            strncpy(g_device_id, imei, sizeof(g_device_id) - 1);
-        } else {
-            LOG_WRN("IMEI unavailable — using fallback device ID");
-            memcpy(g_device_id, "000000000000000", 15);
-            g_device_id[15] = '\0';
+        char imei[MODEM_INFO_MAX_RESPONSE_SIZE] = {0};
+        int imei_ret = modem_info_string_get(MODEM_INFO_IMEI,
+                                             imei, sizeof(imei));
+        if (imei_ret < 0) {
+            LOG_ERR("modem_info_string_get(IMEI) failed: %d", imei_ret);
+            dispatch_error(imei_ret);
+            return imei_ret;
         }
+        /* Strip trailing CR / LF / space */
+        for (int i = (int)strlen(imei) - 1; i >= 0; i--) {
+            if (imei[i] == '\r' || imei[i] == '\n' || imei[i] == ' ') {
+                imei[i] = '\0';
+            } else {
+                break;
+            }
+        }
+        strncpy(g_device_id, imei, sizeof(g_device_id) - 1);
+        g_device_id[sizeof(g_device_id) - 1] = '\0';
         LOG_INF("Device ID (IMEI): %s", g_device_id);
     }
 #endif
+
     LOG_INF("Registered: %d command(s), %d setting(s)", cmd_count, setting_count);
 
     /* ── Step 3: Provision TLS credentials ─────────────────────────────
