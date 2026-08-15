@@ -67,7 +67,7 @@ static struct sockaddr_storage broker_addr;
 
 static uint8_t rx_buf[1024];
 static uint8_t tx_buf[1024];
-static uint8_t payload_buf[512];
+static uint8_t payload_buf[2048];
 
 static bool connected = false;
 
@@ -251,18 +251,15 @@ static void mqtt_evt_handler(struct mqtt_client *c, const struct mqtt_evt *evt)
         /*
          * Incoming QoS 1 message from the cloud.
          *
-         * payload_buf is limited to 511 bytes.  The dashboard enforces
-         * a much smaller limit on command and config payloads, so truncation
-         * should never occur in practice.
-         *
          * Flow:
          *   1. Read payload bytes into payload_buf.
          *   2. Null-terminate so cJSON can parse it.
-         *   3. Extract commandId / configId / sk before calling
-         *      transport_on_message() — these are needed for ACKs.
-         *   4. Deliver to SDK core (dispatches to app command/setting handlers).
-         *   5. Send appropriate ACK to the cloud.
-         *   6. Send PUBACK to broker to complete QoS 1 handshake.
+         *   3. Extract commandId / configId / sk (needed for ACKs).
+         *   4. Send MQTT PUBACK — MUST happen before dispatch so AWS stops
+         *      retrying even if the command causes a reboot.
+         *   5. Send dashboard ACK (commands/ack or config/ack topic).
+         *   6. 200 ms flush — ensures PUBACK bytes leave the modem.
+         *   7. Deliver to SDK core (dispatches to app command/setting handlers).
          */
         const struct mqtt_publish_param *p = &evt->param.publish;
         size_t plen = MIN(p->message.payload.len, sizeof(payload_buf) - 1);
@@ -274,36 +271,69 @@ static void mqtt_evt_handler(struct mqtt_client *c, const struct mqtt_evt *evt)
         }
         payload_buf[ret] = '\0';
 
-        /* Parse enough to extract IDs for ACK before handing off.
-         * transport_on_message() executes handlers synchronously, so we
-         * can ACK immediately after it returns. */
+        /* Parse enough to extract IDs for ACK before handing off. */
         cJSON *msg       = cJSON_Parse((char *)payload_buf);
         const char *type       = msg ? cJSON_GetStringValue(cJSON_GetObjectItem(msg, "type"))      : NULL;
         const char *command_id = msg ? cJSON_GetStringValue(cJSON_GetObjectItem(msg, "commandId")) : NULL;
         const char *sk         = msg ? cJSON_GetStringValue(cJSON_GetObjectItem(msg, "sk"))        : NULL;
         const char *config_id  = msg ? cJSON_GetStringValue(cJSON_GetObjectItem(msg, "configId"))  : NULL;
 
-        /* Deliver message to SDK core — triggers registered app handlers */
-        transport_on_message((char *)payload_buf, ret);
+        LOG_INF("MQTT message received on topic: %.*s (%d bytes)",
+                (int)p->message.topic.topic.size,
+                (char *)p->message.topic.topic.utf8,
+                ret);
 
-        /* Publish ACK based on message type */
+        /*
+         * CRITICAL ORDER — PUBACK and dashboard ACK MUST be sent BEFORE
+         * dispatching the command to the application.
+         *
+         * If we dispatch first and the command handler calls sys_reboot()
+         * (e.g. REBOOT command), the device resets before the PUBACK is
+         * sent. AWS IoT Core never receives the PUBACK and redelivers the
+         * QoS 1 message on the next connect → infinite reboot loop.
+         *
+         * Correct order:
+         *   1. Send MQTT PUBACK    — tells AWS "message received, stop retrying"
+         *   2. Send dashboard ACK  — updates Command History status
+         *   3. Small flush delay   — gives the MQTT stack time to transmit
+         *                           both ACK packets before the modem is reset
+         *   4. Dispatch command    — now safe to reboot / do anything
+         */
+
+        /* Step 1: Complete the QoS 1 handshake FIRST */
+        if (p->message.topic.qos == MQTT_QOS_1_AT_LEAST_ONCE) {
+            struct mqtt_puback_param ack = { .message_id = p->message_id };
+            int puback_ret = mqtt_publish_qos1_ack(c, &ack);
+            if (puback_ret) {
+                LOG_WRN("PUBACK send failed (%d) — broker may redeliver", puback_ret);
+            } else {
+                LOG_DBG("PUBACK sent (msg id %d)", p->message_id);
+            }
+        }
+
+        /* Step 2: Send dashboard ACK */
         if (type) {
             if (strcmp(type, "command") == 0) {
-                /* ACK tells the dashboard this command was received and executed */
                 publish_command_ack(command_id, sk, "executed");
             } else if (strcmp(type, "config") == 0) {
-                /* ACK tells the dashboard config version status → 'applied' */
                 publish_config_ack(config_id, true);
             }
         }
 
         if (msg) cJSON_Delete(msg);
 
-        /* Complete the QoS 1 handshake — required or broker will redeliver */
-        if (p->message.topic.qos == MQTT_QOS_1_AT_LEAST_ONCE) {
-            struct mqtt_puback_param ack = { .message_id = p->message_id };
-            mqtt_publish_qos1_ack(c, &ack);
-        }
+        /* Step 3: Flush — give the MQTT stack time to transmit the PUBACK
+         * and dashboard ACK before the command handler runs.
+         * 200 ms is enough for the modem to clock out both small packets
+         * over the TLS session. The builtin_on_reboot() handler already
+         * waits 500 ms before calling sys_reboot(), but that delay starts
+         * AFTER dispatch — this flush ensures the wire-level bytes are
+         * gone before any reset occurs. */
+        k_sleep(K_MSEC(200));
+
+        /* Step 4: Dispatch — safe to reboot now */
+        transport_on_message((char *)payload_buf, ret);
+
         break;
     }
 
@@ -313,7 +343,7 @@ static void mqtt_evt_handler(struct mqtt_client *c, const struct mqtt_evt *evt)
         break;
 
     case MQTT_EVT_SUBACK:
-        LOG_DBG("SUBACK received — subscriptions confirmed");
+        LOG_INF("SUBACK received — subscribed to commands + config topics");
         break;
 
     case MQTT_EVT_PINGRESP:
@@ -408,7 +438,10 @@ int transport_connect(void)
     client.user_name        = NULL;
     client.protocol_version = MQTT_VERSION_3_1_1;
     client.keepalive        = CONFIG_CONEXIO_CLOUD_MQTT_KEEPALIVE_SEC; /* default 120 s */
-    client.clean_session    = 1; /* Start fresh; no persistent subscriptions */
+    client.clean_session    = 0; /* Persistent session — broker queues QoS 1
+                                  * messages sent while the device is offline.
+                                  * AWS IoT Core will deliver them on reconnect.
+                                  * Required for reliable command delivery. */
     client.rx_buf           = rx_buf;
     client.rx_buf_size      = sizeof(rx_buf);
     client.tx_buf           = tx_buf;

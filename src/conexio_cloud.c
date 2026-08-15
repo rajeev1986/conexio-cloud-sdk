@@ -1236,8 +1236,15 @@ static void cloud_thread_fn(void *a, void *b, void *c)
         if (power_mgr_is_psm_active()) {
             if (power_mgr_wake(30) != 0) {
                 LOG_WRN("PSM wake timeout — skipping publish cycle");
-                k_sleep(K_SECONDS(g_sdk_interval_sec));
+                /* Don't blind-sleep — keep polling so commands are received */
+                transport_poll(K_MSEC(500));
                 continue;
+            }
+            /* Modem just woke from PSM — drain any queued commands before
+             * publishing. AWS may have queued messages during the sleep. */
+            LOG_DBG("PSM wake: draining incoming messages...");
+            for (int drain = 0; drain < 10; drain++) {
+                transport_poll(K_MSEC(200));
             }
         }
 #endif
@@ -1249,6 +1256,16 @@ static void cloud_thread_fn(void *a, void *b, void *c)
                 LOG_WRN("transport_connect failed (%d) — retrying in 10 s", ret);
                 k_sleep(K_SECONDS(10));
                 continue;
+            }
+            /* Drain the socket immediately after reconnect — AWS IoT Core
+             * may have queued commands (QoS 1) while the device was offline
+             * or in PSM sleep. Process them now before the next publish so
+             * commands like REBOOT are handled without waiting for the next
+             * poll cycle.
+             * Poll for up to 2 seconds total in 200ms windows. */
+            LOG_DBG("Post-reconnect: draining incoming messages...");
+            for (int drain = 0; drain < 10; drain++) {
+                transport_poll(K_MSEC(200));
             }
         }
 
