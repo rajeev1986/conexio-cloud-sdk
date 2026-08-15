@@ -29,6 +29,7 @@
 #include <conexio_cloud/conexio_cloud.h>
 
 #include <zephyr/kernel.h>
+#include <zephyr/drivers/gpio.h>
 #include <zephyr/random/random.h>
 #include <zephyr/logging/log.h>
 
@@ -37,6 +38,16 @@ LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
 /* ── Application state ────────────────────────────────────────────────── */
 static int  g_alert_threshold = 80;
 static bool g_debug_mode      = false;
+
+/* ── LED GPIO ─────────────────────────────────────────────────────────── */
+/*
+ * The Conexio Stratus Pro has one user-controllable LED:
+ *   led0 → gpio0 pin 25, GPIO_ACTIVE_HIGH
+ * Defined in the board DTS (conexio_stratus_pro_common.dtsi).
+ * Accessible via the led0 alias — no overlay entry needed.
+ */
+#define LED0_NODE DT_ALIAS(led0)
+static const struct gpio_dt_spec g_led = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
 
 /* ── Telemetry interval limits ────────────────────────────────────────── */
 #define TELEMETRY_INTERVAL_MIN_S   10      /* Fastest: 10 s — debug / development  */
@@ -96,6 +107,44 @@ static void on_fan_off(const char *payload_json, void *arg)
     ARG_UNUSED(payload_json); ARG_UNUSED(arg);
     LOG_INF("FAN_OFF");
     /* TODO: gpio_pin_set(fan_dev, FAN_PIN, 0); */
+}
+
+/* ── LED command handlers ─────────────────────────────────────────────── */
+/*
+ * LED_ON  — turns on the on-board LED (gpio0 pin 25, ACTIVE_HIGH).
+ * LED_OFF — turns off the on-board LED.
+ *
+ * These commands are used to test Device Schedules from the Conexio Console:
+ *   1. Create a schedule with command = LED_ON  (start time)
+ *   2. Create a schedule with command = LED_OFF (end time, or separate schedule)
+ * The Schedules executor publishes the command via MQTT to
+ *   devices/{deviceId}/commands  (QoS 1)
+ * and the SDK dispatches it here.
+ *
+ * Example schedule payload from the dashboard:
+ *   command: LED_ON,  payload: {}
+ *   command: LED_OFF, payload: {}
+ */
+static void on_led_on(const char *payload_json, void *arg)
+{
+    ARG_UNUSED(payload_json); ARG_UNUSED(arg);
+    int ret = gpio_pin_set_dt(&g_led, 1);
+    if (ret != 0) {
+        LOG_ERR("LED_ON: gpio_pin_set_dt failed (%d)", ret);
+    } else {
+        LOG_INF("LED_ON: LED is ON");
+    }
+}
+
+static void on_led_off(const char *payload_json, void *arg)
+{
+    ARG_UNUSED(payload_json); ARG_UNUSED(arg);
+    int ret = gpio_pin_set_dt(&g_led, 0);
+    if (ret != 0) {
+        LOG_ERR("LED_OFF: gpio_pin_set_dt failed (%d)", ret);
+    } else {
+        LOG_INF("LED_OFF: LED is OFF");
+    }
 }
 
 /* ── Settings handlers — app-specific keys only ───────────────────────── */
@@ -167,15 +216,35 @@ int main(void)
     LOG_INF("=== Conexio Advanced Sample (SDK %s) ===",
             conexio_cloud_version());
 
+    /* ── LED GPIO init ────────────────────────────────────────────────
+     * Configure the on-board LED as output, initially OFF.
+     * Must happen before conexio_cloud_init() so the LED is ready
+     * when the first LED_ON/LED_OFF command arrives.              */
+    if (!gpio_is_ready_dt(&g_led)) {
+        LOG_ERR("LED GPIO device not ready");
+    } else {
+        int ret = gpio_pin_configure_dt(&g_led, GPIO_OUTPUT_INACTIVE);
+        if (ret != 0) {
+            LOG_ERR("LED GPIO configure failed (%d)", ret);
+        } else {
+            LOG_INF("LED GPIO ready (pin %d)", g_led.pin);
+        }
+    }
+
     /* ── Register sensor callbacks ────────────────────────────────────
      * The SDK calls these before each publish — no send_metric in loop. */
     conexio_cloud_register_sensor("temperature", read_temperature, NULL);
     conexio_cloud_register_sensor("humidity",    read_humidity,    NULL);
 
     /* ── Register application commands ───────────────────────────────
-     * SDK built-ins: REBOOT, SET_INTERVAL, FIRMWARE_UPDATE            */
+     * SDK built-ins: REBOOT, SET_INTERVAL, FIRMWARE_UPDATE
+     *
+     * LED_ON / LED_OFF are used with Device Schedules to test
+     * timed command delivery from the Conexio Console.             */
     conexio_cloud_register_command("FAN_ON",  on_fan_on,  NULL);
     conexio_cloud_register_command("FAN_OFF", on_fan_off, NULL);
+    conexio_cloud_register_command("LED_ON",  on_led_on,  NULL);
+    conexio_cloud_register_command("LED_OFF", on_led_off, NULL);
 
     /* ── Register application settings ───────────────────────────────
      * SDK built-in: telemetryIntervalSec (CONFIG_AUTO_INTERVAL_SETTING)

@@ -2,4 +2,16 @@
  * Copyright (c) 2026 Conexio Technologies, Inc
  *
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Conexio Stratus Pro (nRF9151) overlay for the Conexio Cloud SDK sample app.
+ *
+ * LED GPIO — inherited from conexio_stratus_pro_common.dtsi:
+ *   led0 alias → gpio0 pin 25, GPIO_ACTIVE_HIGH
+ *
+ * No additional node definitions needed — the board DTS already provides:
+ *   - &gpio0 { status = "okay"; }
+ *   - leds { led_0 { gpios = <&gpio0 25 GPIO_ACTIVE_HIGH>; }; }
+ *   - aliases { led0 = &led0; }
+ *
+ * Add any application-specific node overrides below.
  */
