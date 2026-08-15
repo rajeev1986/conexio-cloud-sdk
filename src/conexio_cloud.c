@@ -803,13 +803,42 @@ void transport_on_message(const char *json_str, size_t len)
         const char *name = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "command"));
         if (name) {
             const cJSON *payload_item = cJSON_GetObjectItem(msg, "payload");
-            /* Serialise payload back to string for the handler.
-             * Handlers that don't need the payload can ignore it.
-             * NULL payload_json is valid — handlers must guard against it. */
-            char *payload_json = payload_item
-                ? cJSON_PrintUnformatted(payload_item) : NULL;
+            /*
+             * The dashboard Lambda stores payload as a JSON string
+             * (e.g. payload = "{\"interval\":30}") — not a nested object.
+             * cJSON_PrintUnformatted on a string node would produce
+             * "\"{'interval':30}\"" (extra quotes) which cJSON_Parse()
+             * in the command handler cannot parse, silently failing.
+             *
+             * Fix: if payload is a JSON string node, use the raw string
+             * value directly. If it is an object/array (future-proof for
+             * direct nested payloads), serialize it as before.
+             */
+            char *payload_json = NULL;
+            if (cJSON_IsString(payload_item)) {
+                /* Raw string value — already valid JSON text */
+                const char *raw = cJSON_GetStringValue(payload_item);
+                if (raw && strlen(raw) > 0) {
+                    payload_json = k_malloc(strlen(raw) + 1);
+                    if (payload_json) {
+                        strcpy(payload_json, raw);
+                    }
+                }
+            } else if (payload_item) {
+                /* Object or array — serialize to compact JSON string */
+                payload_json = cJSON_PrintUnformatted(payload_item);
+            }
             dispatch_command(name, payload_json);
-            if (payload_json) cJSON_free(payload_json);
+            LOG_DBG("Command dispatch: '%s' payload='%s'",
+                    name, payload_json ? payload_json : "(none)");
+            if (payload_json) {
+                /* Use k_free for k_malloc'd strings, cJSON_free for cJSON ones */
+                if (cJSON_IsString(payload_item)) {
+                    k_free(payload_json);
+                } else {
+                    cJSON_free(payload_json);
+                }
+            }
         }
 
     } else if (strcmp(type, "config") == 0) {
