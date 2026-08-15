@@ -215,6 +215,42 @@ int conexio_cloud_register_setting_int(const char *key,
                                        conexio_int_setting_cb_t handler,
                                        void *arg);
 
+/**
+ * @brief Register an integer setting with SDK-enforced min/max range.
+ *
+ * Golioth-style: declare the valid range as named constants. The SDK
+ * validates the incoming value before calling your handler — no
+ * range check needed in the callback.
+ *
+ * Example:
+ * @code
+ * #define ALERT_THRESHOLD_MIN   0
+ * #define ALERT_THRESHOLD_MAX   200
+ *
+ * static enum conexio_setting_status on_alert_threshold(int32_t value, void *arg)
+ * {
+ *     g_alert_threshold = (int)value;   // SDK already validated
+ *     LOG_INF("alertThreshold → %d", g_alert_threshold);
+ *     return CONEXIO_SETTING_OK;
+ * }
+ *
+ * conexio_cloud_register_setting_int_with_range("alertThreshold",
+ *     ALERT_THRESHOLD_MIN, ALERT_THRESHOLD_MAX,
+ *     on_alert_threshold, NULL);
+ * @endcode
+ *
+ * @param key      Setting key name as it appears in the config JSON.
+ * @param min      Minimum accepted value (inclusive).
+ * @param max      Maximum accepted value (inclusive, must be >= min).
+ * @param handler  Handler callback. Must not be NULL.
+ * @param arg      Optional user argument. Can be NULL.
+ * @return 0 on success, -ENOMEM if settings registry is full.
+ */
+int conexio_cloud_register_setting_int_with_range(const char *key,
+                                                  int32_t min, int32_t max,
+                                                  conexio_int_setting_cb_t handler,
+                                                  void *arg);
+
 /** Register a handler for a boolean setting. */
 int conexio_cloud_register_setting_bool(const char *key,
                                         conexio_bool_setting_cb_t handler,
@@ -224,6 +260,38 @@ int conexio_cloud_register_setting_bool(const char *key,
 int conexio_cloud_register_setting_float(const char *key,
                                          conexio_float_setting_cb_t handler,
                                          void *arg);
+
+/**
+ * @brief Register a float setting with SDK-enforced min/max range.
+ *
+ * Example:
+ * @code
+ * #define SAMPLE_RATE_MIN_HZ   0.1f
+ * #define SAMPLE_RATE_MAX_HZ   100.0f
+ *
+ * static enum conexio_setting_status on_sample_rate(float value, void *arg)
+ * {
+ *     g_sample_rate_hz = value;   // SDK already validated
+ *     LOG_INF("sampleRate → %.2f Hz", (double)g_sample_rate_hz);
+ *     return CONEXIO_SETTING_OK;
+ * }
+ *
+ * conexio_cloud_register_setting_float_with_range("sampleRate",
+ *     SAMPLE_RATE_MIN_HZ, SAMPLE_RATE_MAX_HZ,
+ *     on_sample_rate, NULL);
+ * @endcode
+ *
+ * @param key      Setting key name as it appears in the config JSON.
+ * @param min      Minimum accepted value (inclusive).
+ * @param max      Maximum accepted value (inclusive, must be >= min).
+ * @param handler  Handler callback. Must not be NULL.
+ * @param arg      Optional user argument. Can be NULL.
+ * @return 0 on success, -ENOMEM if settings registry is full.
+ */
+int conexio_cloud_register_setting_float_with_range(const char *key,
+                                                    float min, float max,
+                                                    conexio_float_setting_cb_t handler,
+                                                    void *arg);
 
 /** Register a handler for a string setting. */
 int conexio_cloud_register_setting_string(const char *key,

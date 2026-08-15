@@ -42,6 +42,10 @@ static bool g_debug_mode      = false;
 #define TELEMETRY_INTERVAL_MIN_S   10      /* Fastest: 10 s — debug / development  */
 #define TELEMETRY_INTERVAL_MAX_S   7200    /* Slowest: 7200 s (2 h) — battery mode */
 
+/* ── Alert threshold limits ───────────────────────────────────────────── */
+#define ALERT_THRESHOLD_MIN        0       /* 0 = disabled                          */
+#define ALERT_THRESHOLD_MAX        200     /* Covers full sensor range              */
+
 /* Semaphore given when MQTT connects — gates the immediate boot publish. */
 static K_SEM_DEFINE(cloud_connected_sem, 0, 1);
 
@@ -104,7 +108,7 @@ static void on_fan_off(const char *payload_json, void *arg)
 static enum conexio_setting_status on_alert_threshold(int32_t value, void *arg)
 {
     ARG_UNUSED(arg);
-    if (value < 0 || value > 200) return CONEXIO_SETTING_VALUE_OUT_OF_RANGE;
+    /* No range check needed — SDK validated against ALERT_THRESHOLD_MIN/MAX */
     g_alert_threshold = (int)value;
     LOG_INF("Setting: alertThreshold → %d", g_alert_threshold);
     return CONEXIO_SETTING_OK;
@@ -174,9 +178,16 @@ int main(void)
     conexio_cloud_register_command("FAN_OFF", on_fan_off, NULL);
 
     /* ── Register application settings ───────────────────────────────
-     * SDK built-in: telemetryIntervalSec (CONFIG_AUTO_INTERVAL_SETTING) */
-    conexio_cloud_register_setting_int( "alertThreshold", on_alert_threshold, NULL);
-    conexio_cloud_register_setting_bool("debugMode",      on_debug_mode,      NULL);
+     * SDK built-in: telemetryIntervalSec (CONFIG_AUTO_INTERVAL_SETTING)
+     *
+     * Use _with_range variants to declare valid limits as named constants.
+     * The SDK validates incoming values before calling your handler —
+     * no range check needed in the callback.                           */
+    conexio_cloud_register_setting_int_with_range("alertThreshold",
+                                                  ALERT_THRESHOLD_MIN,
+                                                  ALERT_THRESHOLD_MAX,
+                                                  on_alert_threshold, NULL);
+    conexio_cloud_register_setting_bool("debugMode", on_debug_mode, NULL);
 
     /* ── Register telemetry interval with limits ──────────────────────
      * Golioth-style: declare the valid range once as named constants.

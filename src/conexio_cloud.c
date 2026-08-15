@@ -176,6 +176,11 @@ struct setting_entry {
         conexio_string_setting_cb_t cb_string;
     };
     void *arg;
+    /* Optional SDK-enforced range — only used by _with_range variants.
+     * has_range=false means no range check (plain register_setting_*). */
+    bool    has_range;
+    double  range_min;   /* double covers both int32 and float ranges */
+    double  range_max;
 };
 
 static struct setting_entry setting_registry[CONFIG_CONEXIO_CLOUD_MAX_SETTINGS];
@@ -702,8 +707,17 @@ static void dispatch_setting(const char *key, const cJSON *value_item)
                 LOG_WRN("Setting '%s': expected int, got wrong type", key);
                 st = CONEXIO_SETTING_VALUE_WRONG_TYPE;
             } else {
-                /* Cast double to int32 — all JSON numbers are doubles */
-                st = s->cb_int((int32_t)value_item->valuedouble, s->arg);
+                int32_t v = (int32_t)value_item->valuedouble;
+                /* SDK range check — only when registered with _with_range */
+                if (s->has_range && (v < (int32_t)s->range_min ||
+                                     v > (int32_t)s->range_max)) {
+                    LOG_WRN("Setting '%s': %d out of range [%d, %d] — rejected",
+                            key, v,
+                            (int32_t)s->range_min, (int32_t)s->range_max);
+                    st = CONEXIO_SETTING_VALUE_OUT_OF_RANGE;
+                } else {
+                    st = s->cb_int(v, s->arg);
+                }
             }
             break;
 
@@ -721,7 +735,16 @@ static void dispatch_setting(const char *key, const cJSON *value_item)
                 LOG_WRN("Setting '%s': expected float, got wrong type", key);
                 st = CONEXIO_SETTING_VALUE_WRONG_TYPE;
             } else {
-                st = s->cb_float((float)value_item->valuedouble, s->arg);
+                float v = (float)value_item->valuedouble;
+                /* SDK range check — only when registered with _with_range */
+                if (s->has_range && (v < (float)s->range_min ||
+                                     v > (float)s->range_max)) {
+                    LOG_WRN("Setting '%s': %.4g out of range [%.4g, %.4g] — rejected",
+                            key, (double)v, s->range_min, s->range_max);
+                    st = CONEXIO_SETTING_VALUE_OUT_OF_RANGE;
+                } else {
+                    st = s->cb_float(v, s->arg);
+                }
             }
             break;
 
@@ -1433,12 +1456,33 @@ int conexio_cloud_register_setting_int(const char *key,
 {
     if (!key || !handler) return -EINVAL;
     if (setting_count >= CONFIG_CONEXIO_CLOUD_MAX_SETTINGS) return -ENOMEM;
-    setting_registry[setting_count].key    = key;
-    setting_registry[setting_count].type   = SETTING_INT;
-    setting_registry[setting_count].cb_int = handler;
-    setting_registry[setting_count].arg    = arg;
+    setting_registry[setting_count].key       = key;
+    setting_registry[setting_count].type      = SETTING_INT;
+    setting_registry[setting_count].cb_int    = handler;
+    setting_registry[setting_count].arg       = arg;
+    setting_registry[setting_count].has_range = false;
     setting_count++;
     LOG_DBG("Setting registered (int): '%s'", key);
+    return 0;
+}
+
+/* conexio_cloud_register_setting_int_with_range — int setting with SDK range check */
+int conexio_cloud_register_setting_int_with_range(const char *key,
+                                                  int32_t min, int32_t max,
+                                                  conexio_int_setting_cb_t handler,
+                                                  void *arg)
+{
+    if (!key || !handler || max < min) return -EINVAL;
+    if (setting_count >= CONFIG_CONEXIO_CLOUD_MAX_SETTINGS) return -ENOMEM;
+    setting_registry[setting_count].key       = key;
+    setting_registry[setting_count].type      = SETTING_INT;
+    setting_registry[setting_count].cb_int    = handler;
+    setting_registry[setting_count].arg       = arg;
+    setting_registry[setting_count].has_range = true;
+    setting_registry[setting_count].range_min = (double)min;
+    setting_registry[setting_count].range_max = (double)max;
+    setting_count++;
+    LOG_DBG("Setting registered (int, range [%d, %d]): '%s'", min, max, key);
     return 0;
 }
 
@@ -1449,10 +1493,11 @@ int conexio_cloud_register_setting_bool(const char *key,
 {
     if (!key || !handler) return -EINVAL;
     if (setting_count >= CONFIG_CONEXIO_CLOUD_MAX_SETTINGS) return -ENOMEM;
-    setting_registry[setting_count].key     = key;
-    setting_registry[setting_count].type    = SETTING_BOOL;
-    setting_registry[setting_count].cb_bool = handler;
-    setting_registry[setting_count].arg     = arg;
+    setting_registry[setting_count].key       = key;
+    setting_registry[setting_count].type      = SETTING_BOOL;
+    setting_registry[setting_count].cb_bool   = handler;
+    setting_registry[setting_count].arg       = arg;
+    setting_registry[setting_count].has_range = false;
     setting_count++;
     LOG_DBG("Setting registered (bool): '%s'", key);
     return 0;
@@ -1465,12 +1510,34 @@ int conexio_cloud_register_setting_float(const char *key,
 {
     if (!key || !handler) return -EINVAL;
     if (setting_count >= CONFIG_CONEXIO_CLOUD_MAX_SETTINGS) return -ENOMEM;
-    setting_registry[setting_count].key      = key;
-    setting_registry[setting_count].type     = SETTING_FLOAT;
-    setting_registry[setting_count].cb_float = handler;
-    setting_registry[setting_count].arg      = arg;
+    setting_registry[setting_count].key       = key;
+    setting_registry[setting_count].type      = SETTING_FLOAT;
+    setting_registry[setting_count].cb_float  = handler;
+    setting_registry[setting_count].arg       = arg;
+    setting_registry[setting_count].has_range = false;
     setting_count++;
     LOG_DBG("Setting registered (float): '%s'", key);
+    return 0;
+}
+
+/* conexio_cloud_register_setting_float_with_range — float setting with SDK range check */
+int conexio_cloud_register_setting_float_with_range(const char *key,
+                                                    float min, float max,
+                                                    conexio_float_setting_cb_t handler,
+                                                    void *arg)
+{
+    if (!key || !handler || max < min) return -EINVAL;
+    if (setting_count >= CONFIG_CONEXIO_CLOUD_MAX_SETTINGS) return -ENOMEM;
+    setting_registry[setting_count].key       = key;
+    setting_registry[setting_count].type      = SETTING_FLOAT;
+    setting_registry[setting_count].cb_float  = handler;
+    setting_registry[setting_count].arg       = arg;
+    setting_registry[setting_count].has_range = true;
+    setting_registry[setting_count].range_min = (double)min;
+    setting_registry[setting_count].range_max = (double)max;
+    setting_count++;
+    LOG_DBG("Setting registered (float, range [%.4g, %.4g]): '%s'",
+            (double)min, (double)max, key);
     return 0;
 }
 
@@ -1481,10 +1548,11 @@ int conexio_cloud_register_setting_string(const char *key,
 {
     if (!key || !handler) return -EINVAL;
     if (setting_count >= CONFIG_CONEXIO_CLOUD_MAX_SETTINGS) return -ENOMEM;
-    setting_registry[setting_count].key       = key;
-    setting_registry[setting_count].type      = SETTING_STRING;
-    setting_registry[setting_count].cb_string = handler;
-    setting_registry[setting_count].arg       = arg;
+    setting_registry[setting_count].key        = key;
+    setting_registry[setting_count].type       = SETTING_STRING;
+    setting_registry[setting_count].cb_string  = handler;
+    setting_registry[setting_count].arg        = arg;
+    setting_registry[setting_count].has_range  = false; /* no range for strings */
     setting_count++;
     LOG_DBG("Setting registered (string): '%s'", key);
     return 0;
