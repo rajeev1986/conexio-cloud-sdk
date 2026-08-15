@@ -21,6 +21,7 @@
  *       conexio_cloud_register_sensor("humidity",    read_hum,  NULL);
  *       conexio_cloud_register_command("FAN_ON", on_fan_on, NULL);
  *       conexio_cloud_register_setting_int("alertThreshold", on_threshold, NULL);
+ *       conexio_cloud_register_interval(10, 7200);
  *       conexio_cloud_init(NULL);  // everything else is handled by the SDK
  *       while (1) { k_sleep(K_SECONDS(conexio_cloud_get_interval_sec())); }
  *   }
@@ -302,31 +303,28 @@ const char *conexio_cloud_device_id(void);
 int conexio_cloud_get_interval_sec(void);
 
 /**
- * @brief Set the valid range for the SET_INTERVAL command.
+ * @brief Register the telemetry interval setting with min/max limits.
  *
- * By default the SDK enforces [10, 3600] seconds. Call this before
- * conexio_cloud_init() to override both limits to suit your application.
+ * This is the Golioth-style API for configuring SET_INTERVAL.
+ * Define the valid range as named constants, register once before init,
+ * and the SDK handles everything — range validation, applying the new
+ * value, and logging.
  *
- * This gives the application full control over what interval values are
- * accepted from the dashboard — useful for devices with specific power
- * budgets or sensor sampling constraints.
+ * Must be called before conexio_cloud_init().
  *
- * Rules:
- *   - min_sec must be >= 1 (prevents a publish storm).
- *   - max_sec must be >= min_sec.
- *   - Values outside [min_sec, max_sec] sent via SET_INTERVAL are rejected
- *     with a LOG_WRN and the current interval is unchanged.
- *
- * Example — allow 30s to 24h:
+ * Example:
  * @code
- *   conexio_cloud_set_interval_limits(30, 86400);
- *   conexio_cloud_init(cloud_event_handler);
+ * #define TELEMETRY_INTERVAL_MIN_S   10      // fastest: 10 seconds
+ * #define TELEMETRY_INTERVAL_MAX_S   7200    // slowest: 2 hours
+ *
+ * conexio_cloud_register_interval(TELEMETRY_INTERVAL_MIN_S,
+ *                                 TELEMETRY_INTERVAL_MAX_S);
  * @endcode
  *
- * @param min_sec  Minimum accepted interval in seconds (>= 1).
- * @param max_sec  Maximum accepted interval in seconds (>= min_sec).
+ * @param min_sec   Minimum accepted interval in seconds (>= 1).
+ * @param max_sec   Maximum accepted interval in seconds (>= min_sec).
  */
-void conexio_cloud_set_interval_limits(int min_sec, int max_sec);
+void conexio_cloud_register_interval(int min_sec, int max_sec);
 
 /** Returns the SDK semantic version string, e.g. "2.1.0". */
 const char *conexio_cloud_version(void);

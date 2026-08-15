@@ -18,6 +18,7 @@
  * │    telemetryIntervalSec setting — built-in                              │
  * │    Retry, WDT, PSM, offline buffer, FOTA — enabled via prj.conf        │
  * │    _rssi, _snr, _reboot_cnt, _battery_mv, _sdk_version — auto-metrics  │
+ * │    conexio_cloud_register_interval(min, max) — Golioth-style          │
  * └─────────────────────────────────────────────────────────────────────────┘
  */
 
@@ -36,6 +37,10 @@ LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
 /* ── Application state ────────────────────────────────────────────────── */
 static int  g_alert_threshold = 80;
 static bool g_debug_mode      = false;
+
+/* ── Telemetry interval limits ────────────────────────────────────────── */
+#define TELEMETRY_INTERVAL_MIN_S   10      /* Fastest: 10 s — debug / development  */
+#define TELEMETRY_INTERVAL_MAX_S   7200    /* Slowest: 7200 s (2 h) — battery mode */
 
 /* Semaphore given when MQTT connects — gates the immediate boot publish. */
 static K_SEM_DEFINE(cloud_connected_sem, 0, 1);
@@ -173,18 +178,17 @@ int main(void)
     conexio_cloud_register_setting_int( "alertThreshold", on_alert_threshold, NULL);
     conexio_cloud_register_setting_bool("debugMode",      on_debug_mode,      NULL);
 
-    /* ── Configure SET_INTERVAL command limits ────────────────────────
-     * Define the minimum and maximum interval (in seconds) that the
-     * dashboard is allowed to set via the SET_INTERVAL command.
-     * Adjust these to match your application's power budget and
-     * sensor sampling requirements.
+    /* ── Register telemetry interval with limits ──────────────────────
+     * Golioth-style: declare the valid range once as named constants.
+     * The SDK validates any SET_INTERVAL command against these limits —
+     * no range check needed in application code.
      *
-     * Examples:
-     *   10s  min — fast debug polling during development
-     *   7200s max — 2-hour deep-sleep cycle for battery-powered deployment
-     *
-     * Must be called before conexio_cloud_init().                      */
-    conexio_cloud_set_interval_limits(10, 7200);
+     * The optional callback is called ONLY when the new value is valid
+     * and has been applied. Use it for app-level reactions (e.g. update
+     * a display, persist to NVS, adjust a sensor duty cycle).
+     * Pass NULL as the callback if no reaction is needed.              */
+    conexio_cloud_register_interval(TELEMETRY_INTERVAL_MIN_S,
+                                    TELEMETRY_INTERVAL_MAX_S);
 
     /* ── Single SDK init — handles everything ─────────────────────────
      * LTE connect → NTP sync → config fetch → cert provision →

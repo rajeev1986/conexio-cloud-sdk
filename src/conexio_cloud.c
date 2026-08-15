@@ -568,8 +568,8 @@ static void builtin_on_reboot(const char *payload_json, void *arg)
 static int g_sdk_interval_sec = CONFIG_CONEXIO_CLOUD_INTERVAL_SEC;
 
 /* Application-configurable interval limits.
- * Defaults: min=10s, max=INT_MAX (no upper cap beyond min constraint).
- * Override with conexio_cloud_set_interval_limits() before init. */
+ * Set via conexio_cloud_register_interval() before init.
+ * Defaults: min=10s, max=INT_MAX (no upper cap). */
 static int g_interval_min_sec = 10;
 static int g_interval_max_sec = INT_MAX;
 
@@ -1858,17 +1858,16 @@ const char *conexio_cloud_device_id(void) { return g_device_id; }
 int conexio_cloud_get_interval_sec(void) { return g_sdk_interval_sec; }
 
 /**
- * conexio_cloud_set_interval_limits — override the valid range for SET_INTERVAL.
+ * conexio_cloud_register_interval — register interval limits for SET_INTERVAL.
  *
  * Must be called before conexio_cloud_init().
- * min_sec is clamped to >= 1 to prevent a publish storm.
- * max_sec is clamped to >= min_sec.
+ * min_sec clamped to >= 1, max_sec clamped to >= min_sec.
  */
-void conexio_cloud_set_interval_limits(int min_sec, int max_sec)
+void conexio_cloud_register_interval(int min_sec, int max_sec)
 {
     g_interval_min_sec = MAX(1, min_sec);
     g_interval_max_sec = MAX(g_interval_min_sec, max_sec);
-    LOG_INF("SET_INTERVAL limits: [%ds, %ds]",
+    LOG_INF("Interval registered: [%ds, %ds]",
             g_interval_min_sec, g_interval_max_sec);
 }
 
