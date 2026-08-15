@@ -173,6 +173,19 @@ int main(void)
     conexio_cloud_register_setting_int( "alertThreshold", on_alert_threshold, NULL);
     conexio_cloud_register_setting_bool("debugMode",      on_debug_mode,      NULL);
 
+    /* ── Configure SET_INTERVAL command limits ────────────────────────
+     * Define the minimum and maximum interval (in seconds) that the
+     * dashboard is allowed to set via the SET_INTERVAL command.
+     * Adjust these to match your application's power budget and
+     * sensor sampling requirements.
+     *
+     * Examples:
+     *   10s  min — fast debug polling during development
+     *   7200s max — 2-hour deep-sleep cycle for battery-powered deployment
+     *
+     * Must be called before conexio_cloud_init().                      */
+    conexio_cloud_set_interval_limits(10, 7200);
+
     /* ── Single SDK init — handles everything ─────────────────────────
      * LTE connect → NTP sync → config fetch → cert provision →
      * transport init → PSM init → FOTA init → thread spawn           */

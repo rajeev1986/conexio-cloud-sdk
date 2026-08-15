@@ -90,6 +90,7 @@
 #include <zephyr/logging/log.h>
 #include <string.h>
 #include <stdio.h>
+#include <limits.h>                   /* INT_MAX for g_interval_max_sec default */
 #include <cJSON.h>
 #include <cJSON_os.h>
 #include <modem/nrf_modem_lib.h>
@@ -566,6 +567,12 @@ static void builtin_on_reboot(const char *payload_json, void *arg)
 /* SET_INTERVAL — updates the SDK-managed publish interval */
 static int g_sdk_interval_sec = CONFIG_CONEXIO_CLOUD_INTERVAL_SEC;
 
+/* Application-configurable interval limits.
+ * Defaults: min=10s, max=INT_MAX (no upper cap beyond min constraint).
+ * Override with conexio_cloud_set_interval_limits() before init. */
+static int g_interval_min_sec = 10;
+static int g_interval_max_sec = INT_MAX;
+
 static void builtin_on_set_interval(const char *payload_json, void *arg)
 {
     ARG_UNUSED(arg);
@@ -575,11 +582,12 @@ static void builtin_on_set_interval(const char *payload_json, void *arg)
     const cJSON *iv = cJSON_GetObjectItem(p, "interval");
     if (cJSON_IsNumber(iv)) {
         int new_sec = (int)iv->valuedouble;
-        if (new_sec >= 10 && new_sec <= 3600) {
+        if (new_sec >= g_interval_min_sec && new_sec <= g_interval_max_sec) {
             g_sdk_interval_sec = new_sec;
             LOG_INF("SET_INTERVAL: publish interval → %ds", new_sec);
         } else {
-            LOG_WRN("SET_INTERVAL: %d out of range [10, 3600] — ignoring", new_sec);
+            LOG_WRN("SET_INTERVAL: %d out of range [%d, %d] — ignoring",
+                    new_sec, g_interval_min_sec, g_interval_max_sec);
         }
     }
     cJSON_Delete(p);
@@ -1819,6 +1827,21 @@ const char *conexio_cloud_device_id(void) { return g_device_id; }
 /** Returns the current publish interval in seconds (may differ from Kconfig
  *  default if SET_INTERVAL or telemetryIntervalSec OTA Config was applied). */
 int conexio_cloud_get_interval_sec(void) { return g_sdk_interval_sec; }
+
+/**
+ * conexio_cloud_set_interval_limits — override the valid range for SET_INTERVAL.
+ *
+ * Must be called before conexio_cloud_init().
+ * min_sec is clamped to >= 1 to prevent a publish storm.
+ * max_sec is clamped to >= min_sec.
+ */
+void conexio_cloud_set_interval_limits(int min_sec, int max_sec)
+{
+    g_interval_min_sec = MAX(1, min_sec);
+    g_interval_max_sec = MAX(g_interval_min_sec, max_sec);
+    LOG_INF("SET_INTERVAL limits: [%ds, %ds]",
+            g_interval_min_sec, g_interval_max_sec);
+}
 
 /** Returns the SDK semantic version string, e.g. "2.1.0". */
 const char *conexio_cloud_version(void) { return CONEXIO_SDK_VERSION; }
