@@ -823,20 +823,102 @@ void transport_on_message(const char *json_str, size_t len)
 
     if (strcmp(type, "command") == 0) {
         /* Extract command name and optional payload, then dispatch */
-        const char *name = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "command"));
+        const char *name       = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "command"));
+        const char *command_id = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "commandId"));
+        const char *valid_until= cJSON_GetStringValue(cJSON_GetObjectItem(msg, "validUntil"));
+
         if (name) {
-            const cJSON *payload_item = cJSON_GetObjectItem(msg, "payload");
-            /*
-             * The dashboard Lambda stores payload as a JSON string
-             * (e.g. payload = "{\"interval\":30}") — not a nested object.
-             * cJSON_PrintUnformatted on a string node would produce
-             * "\"{'interval':30}\"" (extra quotes) which cJSON_Parse()
-             * in the command handler cannot parse, silently failing.
+            /* ── #7 Command deduplication ─────────────────────────────────
              *
-             * Fix: if payload is a JSON string node, use the raw string
-             * value directly. If it is an object/array (future-proof for
-             * direct nested payloads), serialize it as before.
+             * Stores the last CMD_DEDUP_SLOTS commandIds seen this session.
+             * Protects against QoS-1 redelivery after reconnect delivering
+             * the same message twice in quick succession.
+             *
+             * Uses a simple fixed-size ring buffer of 8 slots — enough for
+             * any realistic burst of commands without heap allocation.
+             * Resets on reboot (RAM only, not NVS-persisted intentionally:
+             * a reboot is a clean state and old IDs should be re-accepted).
              */
+#define CMD_DEDUP_SLOTS 8
+#define CMD_ID_MAX_LEN  64
+            static char s_seen_ids[CMD_DEDUP_SLOTS][CMD_ID_MAX_LEN];
+            static int  s_seen_head = 0;
+            static bool s_dedup_init = false;
+            if (!s_dedup_init) {
+                memset(s_seen_ids, 0, sizeof(s_seen_ids));
+                s_dedup_init = true;
+            }
+            bool is_duplicate = false;
+            if (command_id && command_id[0] != '\0') {
+                for (int i = 0; i < CMD_DEDUP_SLOTS; i++) {
+                    if (s_seen_ids[i][0] != '\0' &&
+                        strncmp(s_seen_ids[i], command_id, CMD_ID_MAX_LEN - 1) == 0) {
+                        is_duplicate = true;
+                        break;
+                    }
+                }
+                if (!is_duplicate) {
+                    /* Record this commandId in the ring */
+                    strncpy(s_seen_ids[s_seen_head], command_id, CMD_ID_MAX_LEN - 1);
+                    s_seen_ids[s_seen_head][CMD_ID_MAX_LEN - 1] = '\0';
+                    s_seen_head = (s_seen_head + 1) % CMD_DEDUP_SLOTS;
+                }
+            }
+
+            if (is_duplicate) {
+                LOG_INF("Command '%s' (id=%s) already executed — skipping duplicate",
+                        name, command_id ? command_id : "?");
+                cJSON_Delete(msg);
+                return;
+            }
+
+            /* ── #3 validUntil staleness check ───────────────────────────
+             *
+             * The scheduler executor sets validUntil = schedule.endAt for
+             * start commands so a device waking after the window closes
+             * does not execute a stale command (e.g. LED_ON after LED_OFF
+             * window has already passed).
+             *
+             * We only skip if NTP is synced (date_time_now succeeds).
+             * If the clock is not synced, we execute conservatively —
+             * better to run a slightly stale command than to silently drop.
+             *
+             * End commands omit validUntil and are always executed.
+             */
+            if (valid_until && valid_until[0] != '\0') {
+                int64_t now_ms = 0;
+                if (date_time_now(&now_ms) == 0) {
+                    /* Parse validUntil ISO-8601 string to ms since epoch.
+                     * strptime is not available in Zephyr so we use a
+                     * lightweight sscanf approach. */
+                    struct tm tm_until = {0};
+                    int yr, mo, dy, hr, mn, sc;
+                    if (sscanf(valid_until, "%d-%d-%dT%d:%d:%d",
+                               &yr, &mo, &dy, &hr, &mn, &sc) == 6) {
+                        tm_until.tm_year = yr - 1900;
+                        tm_until.tm_mon  = mo - 1;
+                        tm_until.tm_mday = dy;
+                        tm_until.tm_hour = hr;
+                        tm_until.tm_min  = mn;
+                        tm_until.tm_sec  = sc;
+                        time_t until_t = mktime(&tm_until);
+                        /* mktime treats as local time; UTC adjustment:
+                         * since device NTP sets UTC, tm is UTC — use
+                         * timegm-equivalent: subtract local offset.
+                         * Simpler: compare epoch seconds directly. */
+                        int64_t until_ms = (int64_t)until_t * 1000LL;
+                        if (now_ms > until_ms) {
+                            LOG_WRN("Command '%s' expired (validUntil=%s) — skipping",
+                                    name, valid_until);
+                            cJSON_Delete(msg);
+                            return;
+                        }
+                    }
+                }
+            }
+
+            /* ── Payload extraction (unchanged) ──────────────────────── */
+            const cJSON *payload_item = cJSON_GetObjectItem(msg, "payload");
             char *payload_json = NULL;
             if (cJSON_IsString(payload_item)) {
                 /* Raw string value — already valid JSON text */
@@ -852,10 +934,11 @@ void transport_on_message(const char *json_str, size_t len)
                 payload_json = cJSON_PrintUnformatted(payload_item);
             }
             dispatch_command(name, payload_json);
-            LOG_DBG("Command dispatch: '%s' payload='%s'",
-                    name, payload_json ? payload_json : "(none)");
+            LOG_DBG("Command dispatch: '%s' id=%s payload='%s'",
+                    name,
+                    command_id ? command_id : "none",
+                    payload_json ? payload_json : "(none)");
             if (payload_json) {
-                /* Use k_free for k_malloc'd strings, cJSON_free for cJSON ones */
                 if (cJSON_IsString(payload_item)) {
                     k_free(payload_json);
                 } else {
