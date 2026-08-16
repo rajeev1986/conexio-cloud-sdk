@@ -454,3 +454,158 @@ The Conexio Console Firmware page creates AWS IoT Jobs with this document:
 The URL is a 24-hour pre-signed S3 GET — no AWS credentials needed on the device.
 After download MCUboot verifies the checksum. On the new firmware's first boot
 `fota_confirm()` marks the image valid; MCUboot reverts if confirm is never called.
+
+---
+
+## Device Schedules — Testing LED ON/OFF
+
+Device Schedules let you send commands to the device at a specific time from
+the Conexio Console. This sample registers `LED_ON` and `LED_OFF` commands
+that control the on-board LED (gpio0 pin 25) so you can verify timed command
+delivery end-to-end.
+
+### Firmware side — what's already in this sample
+
+```c
+#include <zephyr/drivers/gpio.h>
+
+/* On-board LED — gpio0 pin 25, GPIO_ACTIVE_HIGH (from board DTS) */
+#define LED0_NODE DT_ALIAS(led0)
+static const struct gpio_dt_spec g_led = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
+
+/* ── LED command handlers ── */
+static void on_led_on(const char *payload_json, void *arg)
+{
+    ARG_UNUSED(payload_json); ARG_UNUSED(arg);
+    gpio_pin_set_dt(&g_led, 1);
+    LOG_INF("LED_ON: LED is ON");
+}
+
+static void on_led_off(const char *payload_json, void *arg)
+{
+    ARG_UNUSED(payload_json); ARG_UNUSED(arg);
+    gpio_pin_set_dt(&g_led, 0);
+    LOG_INF("LED_OFF: LED is OFF");
+}
+
+int main(void)
+{
+    /* ── LED GPIO init — before conexio_cloud_init() ── */
+    gpio_pin_configure_dt(&g_led, GPIO_OUTPUT_INACTIVE);
+
+    /* ── Register LED commands ── */
+    conexio_cloud_register_command("LED_ON",  on_led_on,  NULL);
+    conexio_cloud_register_command("LED_OFF", on_led_off, NULL);
+
+    conexio_cloud_init(cloud_event_handler);
+    /* ... */
+}
+```
+
+`prj.conf` requires:
+```ini
+CONFIG_GPIO=y
+```
+
+### How to add a schedule from the dashboard
+
+1. Open **Control & Automation → Schedules** → **New Schedule**
+
+2. Fill in the form:
+
+| Field | Example |
+|---|---|
+| Schedule name | LED test |
+| Target device | Stratus Pro 1 |
+| Command | `LED_ON` |
+| JSON payload | `{}` |
+| Start date & time | Pick a time **at least 1 minute** in the future |
+| Repeat | Once |
+| Add end time | ✅ checked |
+| End date & time | 2–5 minutes after start |
+| End command | `LED_OFF` |
+
+3. Click **Save**. A live clock below the form shows your current local time
+   so you can pick the right time without converting manually.
+
+4. Watch the schedule card — it shows:
+
+```
+● Pending          ← waiting for scheduled time
+● Running          ← LED_ON fired, progress bar visible
+  [████░░░] 60%  ● Confirmed   08:30 PM → 08:35 PM
+● Completed        ← LED_OFF fired
+```
+
+5. Watch the serial monitor — at the scheduled time you will see:
+
+```
+MQTT message received on topic: devices/355025934980275/commands (N bytes)
+LED_ON: LED is ON
+
+[2 minutes later]
+
+MQTT message received on topic: devices/355025934980275/commands (N bytes)
+LED_OFF: LED is OFF
+```
+
+### Important notes
+
+**Minimum lead time:** Set the start time at least **1 minute** in the
+future. EventBridge Scheduler needs ~60s to register the rule before it fires.
+The form shows a warning if the time is too close.
+
+**If the device is offline** when the schedule fires, the command is queued by
+AWS IoT Core (QoS 1, persistent session `clean_session=0`). The device will
+receive it when it next connects — see the table in the docs for the expected
+behaviour when the device wakes after the scheduled window.
+
+**Command payload:** The Schedules executor sends the command in the same
+format as Device Commands:
+
+```json
+{
+  "type":        "command",
+  "deviceId":    "355025934980275",
+  "command":     "LED_ON",
+  "payload":     {},
+  "timestamp":   "2026-08-16T00:15:40.856Z",
+  "source":      "scheduler",
+  "isEndCommand": false
+}
+```
+
+The firmware receives this via `dispatch_command()` in the SDK, which calls
+your registered `on_led_on()` / `on_led_off()` handler directly.
+
+### Adding your own scheduled commands
+
+Register any command handler and it becomes available in the Schedules form:
+
+```c
+/* Example: open/close a valve on a schedule */
+static void on_valve_open(const char *payload_json, void *arg)
+{
+    /* Optionally parse payload_json with cJSON for parameters */
+    gpio_pin_set(valve_dev, VALVE_PIN, 1);
+    LOG_INF("Valve OPEN");
+}
+
+static void on_valve_close(const char *payload_json, void *arg)
+{
+    gpio_pin_set(valve_dev, VALVE_PIN, 0);
+    LOG_INF("Valve CLOSE");
+}
+
+/* In main(), before conexio_cloud_init(): */
+conexio_cloud_register_command("VALVE_OPEN",  on_valve_open,  NULL);
+conexio_cloud_register_command("VALVE_CLOSE", on_valve_close, NULL);
+```
+
+Then in the dashboard, set:
+- Start command: `VALVE_OPEN`
+- End command: `VALVE_CLOSE`
+
+The same QoS-1 MQTT delivery and persistent session guarantees apply — the
+command will be delivered even if the device was in PSM sleep at the exact
+scheduled time.
