@@ -406,6 +406,90 @@ const char *conexio_cloud_version(void);
 void conexio_cloud_set_fota_cb(fota_event_cb_t cb);
 #endif
 
+/* ── Schedule watchdog ───────────────────────────────────────────────────── */
+
+/**
+ * Schedule lifecycle event types delivered to the schedule callback.
+ */
+enum conexio_schedule_event_type {
+    /** Start command received from cloud; firmware watchdog timer armed. */
+    CONEXIO_SCHEDULE_EVT_STARTED,
+    /** Stop command executed autonomously (k_timer fired — no cloud needed). */
+    CONEXIO_SCHEDULE_EVT_STOPPED,
+    /** stopAt was already in the past on boot; stop command ran immediately. */
+    CONEXIO_SCHEDULE_EVT_EXPIRED,
+};
+
+/** Event structure passed to the schedule lifecycle callback. */
+struct conexio_schedule_event {
+    enum conexio_schedule_event_type type;
+    /** Name of the stop command (e.g. "LED_OFF"). */
+    const char *stop_command;
+};
+
+/** Callback type for schedule lifecycle events. */
+typedef void (*conexio_schedule_cb_t)(const struct conexio_schedule_event *evt);
+
+/**
+ * @brief Register a schedule lifecycle callback.
+ *
+ * Called by the SDK for three events:
+ *   STARTED  — cloud delivered the start command; watchdog timer is now armed.
+ *   STOPPED  — stop command fired autonomously by the firmware timer.
+ *   EXPIRED  — device rebooted during schedule window; stop ran immediately on boot.
+ *
+ * Must be called before conexio_cloud_init().
+ *
+ * Example:
+ * @code
+ * static void on_schedule(const struct conexio_schedule_event *evt)
+ * {
+ *     switch (evt->type) {
+ *     case CONEXIO_SCHEDULE_EVT_STARTED:
+ *         LOG_INF("Schedule started — stop '%s' will fire autonomously",
+ *                 evt->stop_command);
+ *         break;
+ *     case CONEXIO_SCHEDULE_EVT_STOPPED:
+ *         LOG_INF("Schedule stopped autonomously ('%s' fired by timer)",
+ *                 evt->stop_command);
+ *         break;
+ *     case CONEXIO_SCHEDULE_EVT_EXPIRED:
+ *         LOG_WRN("Schedule expired on boot — '%s' ran immediately",
+ *                 evt->stop_command);
+ *         break;
+ *     }
+ * }
+ *
+ * conexio_cloud_register_schedule_cb(on_schedule);
+ * @endcode
+ *
+ * @param cb  Schedule lifecycle callback. Must not be NULL.
+ */
+void conexio_cloud_register_schedule_cb(conexio_schedule_cb_t cb);
+
+/**
+ * @brief Cancel the active schedule watchdog timer.
+ *
+ * Call this from the stop command handler (e.g. on_led_off) when the stop
+ * command arrives from the cloud before the timer fires — this prevents the
+ * watchdog from dispatching a duplicate stop command later.
+ *
+ * Safe to call when no watchdog is armed (no-op).
+ *
+ * Example — in the stop command handler:
+ * @code
+ * static void on_led_off(const char *payload_json, void *arg)
+ * {
+ *     gpio_pin_set_dt(&g_led, 0);
+ *     // Cloud delivered the stop command — cancel the firmware watchdog
+ *     // so it doesn't fire a duplicate LED_OFF when the timer expires.
+ *     conexio_cloud_cancel_schedule_watchdog();
+ *     LOG_INF("LED_OFF");
+ * }
+ * @endcode
+ */
+void conexio_cloud_cancel_schedule_watchdog(void);
+
 #ifdef __cplusplus
 }
 #endif

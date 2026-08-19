@@ -145,6 +145,49 @@ static void on_led_off(const char *payload_json, void *arg)
     } else {
         LOG_INF("LED_OFF: LED is OFF");
     }
+    /* Cancel the firmware watchdog — stop command arrived from the cloud,
+     * so the autonomous timer is no longer needed. This prevents a duplicate
+     * LED_OFF from firing when the k_timer would have expired. */
+    conexio_cloud_cancel_schedule_watchdog();
+}
+
+/* ── Schedule lifecycle callback ──────────────────────────────────────── */
+/*
+ * Called by the SDK for three events:
+ *   STARTED  — cloud delivered LED_ON; firmware watchdog timer is now armed.
+ *              The LED_OFF will fire autonomously at stopAt even without
+ *              cloud connectivity.
+ *   STOPPED  — LED_OFF was fired by the firmware timer (device was offline
+ *              when the cloud's end-command EventBridge rule fired).
+ *   EXPIRED  — Device rebooted during the LED_ON window; LED_OFF ran
+ *              immediately on boot because stopAt had already passed.
+ *
+ * This callback is optional — it is useful for logging, status LEDs, or
+ * sending a telemetry event to confirm the schedule ran on the device side.
+ */
+static void on_schedule(const struct conexio_schedule_event *evt)
+{
+    switch (evt->type) {
+    case CONEXIO_SCHEDULE_EVT_STARTED:
+        LOG_INF("Schedule watchdog armed — '%s' will fire autonomously at stopAt",
+                evt->stop_command);
+        break;
+    case CONEXIO_SCHEDULE_EVT_STOPPED:
+        LOG_INF("Schedule stopped autonomously — '%s' fired by firmware timer "
+                "(device was offline when cloud end-command fired)",
+                evt->stop_command);
+        /* Optionally queue a metric so the cloud knows the device ran the
+         * schedule independently: */
+        /* conexio_cloud_send_metric("_sched_autonomous_stop", 1.0); */
+        break;
+    case CONEXIO_SCHEDULE_EVT_EXPIRED:
+        LOG_WRN("Schedule expired on boot — '%s' executed immediately "
+                "(device was off during schedule window)",
+                evt->stop_command);
+        break;
+    default:
+        break;
+    }
 }
 
 /* ── Settings handlers — app-specific keys only ───────────────────────── */
@@ -269,6 +312,13 @@ int main(void)
      * Pass NULL as the callback if no reaction is needed.              */
     conexio_cloud_register_interval(TELEMETRY_INTERVAL_MIN_S,
                                     TELEMETRY_INTERVAL_MAX_S);
+
+    /* ── Register schedule lifecycle callback ─────────────────────────
+     * Called when the firmware watchdog arms, fires, or runs on boot.
+     * Enables logging and optional telemetry for autonomous schedule runs.
+     * The SDK stores the stop command + stopAt in NVS so LED_OFF runs even
+     * if the device loses connectivity after receiving LED_ON.            */
+    conexio_cloud_register_schedule_cb(on_schedule);
 
     /* ── Single SDK init — handles everything ─────────────────────────
      * LTE connect → NTP sync → config fetch → cert provision →

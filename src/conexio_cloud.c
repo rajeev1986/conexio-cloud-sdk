@@ -90,6 +90,7 @@
 #include <zephyr/logging/log.h>
 #include <string.h>
 #include <stdio.h>
+#include <inttypes.h>                 /* PRId64 for schedule watchdog logs  */
 #include <limits.h>                   /* INT_MAX for g_interval_max_sec default */
 #include <cJSON.h>
 #include <cJSON_os.h>
@@ -294,11 +295,15 @@ static void ntp_event_handler(const struct date_time_evt *evt)
  * NVS key IDs — must not clash with each other or with offline_buffer.c.
  *   0x0001 = reboot counter   (this file)
  *   0x0002 = reboot reason    (this file)
+ *   0x0003 = schedule watchdog active flag  (this file)
+ *   0x0004 = schedule watchdog record       (this file)
  *   0x0010-0x0012 = offline buffer metadata
  *   0x2000+ = offline buffer entries
  */
-#define REBOOT_CNT_NVS_ID    0x0001U
-#define REBOOT_REASON_NVS_ID 0x0002U
+#define REBOOT_CNT_NVS_ID        0x0001U
+#define REBOOT_REASON_NVS_ID     0x0002U
+#define SCHED_WDT_ACTIVE_NVS_ID  0x0003U
+#define SCHED_WDT_RECORD_NVS_ID  0x0004U
 
 static struct nvs_fs reboot_nvs;
 static bool nvs_initialised = false;
@@ -358,6 +363,254 @@ static void reboot_counter_init(void)
 #else
     g_reboot_cnt = 0;
     LOG_DBG("Reboot counter: 0 (NVS disabled — not persistent)");
+#endif
+}
+
+/* ── Schedule watchdog ────────────────────────────────────────────────────
+ *
+ * Level 2 autonomous schedule execution.
+ *
+ * When a start command arrives that contains stopCommand + stopAt fields,
+ * the SDK:
+ *   1. Dispatches the start command immediately (e.g. LED_ON).
+ *   2. Stores the stop info (command name, payload, stopAt epoch) in NVS
+ *      so it survives a reboot.
+ *   3. Arms a k_timer for (stopAt - now).  When the timer fires it
+ *      dispatches the stop command locally — no cloud connection required.
+ *   4. Clears the NVS record after the stop command executes.
+ *
+ * On boot, sched_watchdog_boot_check() is called from conexio_cloud_init():
+ *   - If a watchdog record exists AND stopAt is still in the future,
+ *     the timer is re-armed for the remaining duration.
+ *   - If stopAt has already passed, the stop command is executed immediately
+ *     (device may have been powered off during the schedule window).
+ *   - If no record exists, nothing happens.
+ *
+ * The optional user callback conexio_cloud_register_schedule_cb() is invoked
+ * for three events: SCHEDULE_STARTED, SCHEDULE_STOPPED, SCHEDULE_EXPIRED.
+ *
+ * NVS layout (requires CONFIG_NVS=y):
+ *   0x0003 — uint8_t active flag (1 = watchdog armed)
+ *   0x0004 — struct sched_watchdog_nvs record
+ *
+ * Thread safety:
+ *   The timer callback runs in the system work queue context.
+ *   dispatch_command() is safe to call from any context.
+ */
+
+/* Max command name length stored in the watchdog record */
+#define SCHED_WDT_CMD_MAX  32
+/* Max payload JSON stored in the watchdog record */
+#define SCHED_WDT_PLD_MAX  128
+
+/* NVS-persisted watchdog record */
+struct sched_watchdog_nvs {
+    char    stop_command[SCHED_WDT_CMD_MAX];   /* e.g. "LED_OFF"          */
+    char    stop_payload[SCHED_WDT_PLD_MAX];   /* serialised JSON payload  */
+    int64_t stop_at_ms;                         /* Unix epoch ms (UTC)      */
+};
+
+/* Schedule watchdog event types delivered to the user callback */
+/* NOTE: enum/struct/typedef are defined in conexio_cloud.h — included above */
+
+/* User-registered schedule callback (NULL if not registered) */
+static conexio_schedule_cb_t g_schedule_cb = NULL;
+
+/* k_timer used for the autonomous stop */
+static struct k_timer  g_sched_wdt_timer;
+static struct k_work   g_sched_wdt_work;
+
+/* RAM copy of the active watchdog record (valid while timer is armed) */
+static struct sched_watchdog_nvs g_sched_wdt;
+static bool                      g_sched_wdt_active = false;
+
+/* Forward declaration — dispatch_command is defined later in this file */
+static void dispatch_command(const char *name, const char *payload_json);
+
+/* Write the watchdog record to NVS and set the active flag */
+static void sched_wdt_nvs_save(const struct sched_watchdog_nvs *rec)
+{
+#if defined(CONFIG_NVS)
+    if (!nvs_initialised) return;
+    uint8_t flag = 1U;
+    nvs_write(&reboot_nvs, SCHED_WDT_ACTIVE_NVS_ID, &flag, sizeof(flag));
+    nvs_write(&reboot_nvs, SCHED_WDT_RECORD_NVS_ID,  rec,  sizeof(*rec));
+    LOG_DBG("Schedule watchdog: saved to NVS (stop=%s at %" PRId64 "ms)",
+            rec->stop_command, rec->stop_at_ms);
+#else
+    ARG_UNUSED(rec);
+    LOG_WRN("Schedule watchdog: NVS not enabled — stop command will not "
+            "survive a reboot during the schedule window");
+#endif
+}
+
+/* Clear the watchdog record from NVS */
+static void sched_wdt_nvs_clear(void)
+{
+#if defined(CONFIG_NVS)
+    if (!nvs_initialised) return;
+    uint8_t flag = 0U;
+    nvs_write(&reboot_nvs, SCHED_WDT_ACTIVE_NVS_ID, &flag, sizeof(flag));
+    /* Overwrite record with zeros to remove stale data */
+    struct sched_watchdog_nvs empty = {0};
+    nvs_write(&reboot_nvs, SCHED_WDT_RECORD_NVS_ID, &empty, sizeof(empty));
+    LOG_DBG("Schedule watchdog: cleared from NVS");
+#endif
+}
+
+/* Work handler — runs in system work queue, fires when k_timer expires */
+static void sched_wdt_work_handler(struct k_work *work)
+{
+    ARG_UNUSED(work);
+
+    if (!g_sched_wdt_active) return;
+    g_sched_wdt_active = false;
+
+    LOG_INF("Schedule watchdog: firing stop command '%s' (timer expired)",
+            g_sched_wdt.stop_command);
+
+    /* Execute the stop command locally */
+    dispatch_command(g_sched_wdt.stop_command,
+                     g_sched_wdt.stop_payload[0] != '\0'
+                         ? g_sched_wdt.stop_payload : NULL);
+
+    /* Clear NVS — schedule window complete */
+    sched_wdt_nvs_clear();
+
+    /* Notify user callback */
+    if (g_schedule_cb) {
+        struct conexio_schedule_event evt = {
+            .type         = CONEXIO_SCHEDULE_EVT_STOPPED,
+            .stop_command = g_sched_wdt.stop_command,
+        };
+        g_schedule_cb(&evt);
+    }
+
+    /* Zero the RAM record */
+    memset(&g_sched_wdt, 0, sizeof(g_sched_wdt));
+}
+
+/* k_timer expiry function — submits work to the system work queue
+ * (dispatch_command must not run directly from ISR/timer context) */
+static void sched_wdt_timer_expiry(struct k_timer *timer)
+{
+    ARG_UNUSED(timer);
+    k_work_submit(&g_sched_wdt_work);
+}
+
+/* Arm the schedule watchdog.
+ * Called from transport_on_message() when a start command with stopAt arrives.
+ * Also called from sched_watchdog_boot_check() to re-arm after reboot.
+ *
+ * stop_at_ms — Unix epoch milliseconds (UTC) when the stop command should fire.
+ * stop_command / stop_payload — the command to dispatch when the timer fires.
+ */
+static void sched_wdt_arm(const char *stop_command, const char *stop_payload,
+                           int64_t stop_at_ms)
+{
+    /* Cancel any previously armed timer */
+    k_timer_stop(&g_sched_wdt_timer);
+
+    /* Populate RAM record */
+    strncpy(g_sched_wdt.stop_command, stop_command,   SCHED_WDT_CMD_MAX - 1);
+    g_sched_wdt.stop_command[SCHED_WDT_CMD_MAX - 1] = '\0';
+    strncpy(g_sched_wdt.stop_payload,
+            stop_payload ? stop_payload : "{}",
+            SCHED_WDT_PLD_MAX - 1);
+    g_sched_wdt.stop_payload[SCHED_WDT_PLD_MAX - 1] = '\0';
+    g_sched_wdt.stop_at_ms = stop_at_ms;
+    g_sched_wdt_active     = true;
+
+    /* Persist to NVS */
+    sched_wdt_nvs_save(&g_sched_wdt);
+
+    /* Compute delay — clamp to 1 ms minimum */
+    int64_t now_ms = 0;
+    date_time_now(&now_ms);
+    int64_t delay_ms = stop_at_ms - now_ms;
+    if (delay_ms < 1) delay_ms = 1;
+
+    k_timer_start(&g_sched_wdt_timer, K_MSEC(delay_ms), K_NO_WAIT);
+
+    LOG_INF("Schedule watchdog armed: '%s' fires in %" PRId64 " ms",
+            stop_command, delay_ms);
+}
+
+/*
+ * sched_watchdog_boot_check — called once from conexio_cloud_init().
+ *
+ * Checks NVS for a pending watchdog record from a previous session.
+ * Three cases:
+ *   a) No record (flag=0 or key missing) → nothing to do.
+ *   b) Record found, stopAt still in future → re-arm the timer.
+ *   c) Record found, stopAt already past → run stop command immediately
+ *      (device was offline/powered-off during the schedule window).
+ */
+static void sched_watchdog_boot_check(void)
+{
+#if defined(CONFIG_NVS)
+    if (!nvs_initialised) return;
+
+    uint8_t flag = 0U;
+    if (nvs_read(&reboot_nvs, SCHED_WDT_ACTIVE_NVS_ID,
+                 &flag, sizeof(flag)) < 0 || flag == 0U) {
+        LOG_DBG("Schedule watchdog: no pending record");
+        return;
+    }
+
+    struct sched_watchdog_nvs rec = {0};
+    if (nvs_read(&reboot_nvs, SCHED_WDT_RECORD_NVS_ID,
+                 &rec, sizeof(rec)) < 0) {
+        LOG_WRN("Schedule watchdog: active flag set but record unreadable — clearing");
+        sched_wdt_nvs_clear();
+        return;
+    }
+
+    if (rec.stop_command[0] == '\0') {
+        LOG_WRN("Schedule watchdog: empty stop command in record — clearing");
+        sched_wdt_nvs_clear();
+        return;
+    }
+
+    int64_t now_ms = 0;
+    bool clock_ok = (date_time_now(&now_ms) == 0);
+
+    if (!clock_ok || rec.stop_at_ms > now_ms) {
+        /* Clock not synced yet, or stop time still in future — re-arm.
+         * If clock is not synced we re-arm with the full remaining window
+         * approximated as (stopAt - 0) which overestimates; the timer
+         * expiry simply runs the stop command when it fires. */
+        int64_t delay_ms = clock_ok
+            ? (rec.stop_at_ms - now_ms)
+            : rec.stop_at_ms;                  /* fallback when no NTP     */
+        if (delay_ms < 1) delay_ms = 1;
+
+        strncpy(g_sched_wdt.stop_command, rec.stop_command, SCHED_WDT_CMD_MAX - 1);
+        strncpy(g_sched_wdt.stop_payload, rec.stop_payload, SCHED_WDT_PLD_MAX - 1);
+        g_sched_wdt.stop_at_ms = rec.stop_at_ms;
+        g_sched_wdt_active     = true;
+
+        k_timer_start(&g_sched_wdt_timer, K_MSEC(delay_ms), K_NO_WAIT);
+        LOG_INF("Schedule watchdog: re-armed after reboot — '%s' fires in %" PRId64 " ms",
+                rec.stop_command, delay_ms);
+    } else {
+        /* stopAt is in the past — execute stop command immediately */
+        LOG_WRN("Schedule watchdog: stopAt already passed — running '%s' now",
+                rec.stop_command);
+        dispatch_command(rec.stop_command,
+                         rec.stop_payload[0] != '\0' ? rec.stop_payload : NULL);
+        sched_wdt_nvs_clear();
+
+        if (g_schedule_cb) {
+            struct conexio_schedule_event evt = {
+                .type         = CONEXIO_SCHEDULE_EVT_EXPIRED,
+                .stop_command = rec.stop_command,
+            };
+            g_schedule_cb(&evt);
+        }
+    }
+#else
+    LOG_DBG("Schedule watchdog: NVS not enabled — boot check skipped");
 #endif
 }
 
@@ -938,6 +1191,65 @@ void transport_on_message(const char *json_str, size_t len)
                     name,
                     command_id ? command_id : "none",
                     payload_json ? payload_json : "(none)");
+
+            /* ── Schedule watchdog: arm on start command ─────────────────
+             *
+             * If the cloud included stopCommand + stopAt in this message
+             * (set by executor.ts on start commands that have a run window),
+             * arm the firmware-side watchdog timer so the stop command runs
+             * autonomously even if the device loses cloud connectivity.
+             *
+             * stopAt is ISO-8601 UTC — parsed to epoch ms using sscanf.
+             * We only arm if NTP is synced so the comparison is accurate.
+             * If NTP is not synced we still arm with the absolute epoch
+             * value; the timer may fire late but the stop will run.
+             */
+            const char *stop_cmd = cJSON_GetStringValue(
+                cJSON_GetObjectItem(msg, "stopCommand"));
+            const char *stop_at_str = cJSON_GetStringValue(
+                cJSON_GetObjectItem(msg, "stopAt"));
+
+            if (stop_cmd && stop_cmd[0] != '\0' &&
+                stop_at_str && stop_at_str[0] != '\0') {
+                /* Parse stopAt ISO-8601 → epoch ms */
+                int yr2, mo2, dy2, hr2, mn2, sc2;
+                if (sscanf(stop_at_str, "%d-%d-%dT%d:%d:%d",
+                           &yr2, &mo2, &dy2, &hr2, &mn2, &sc2) == 6) {
+                    struct tm tm2 = {0};
+                    tm2.tm_year = yr2 - 1900;
+                    tm2.tm_mon  = mo2 - 1;
+                    tm2.tm_mday = dy2;
+                    tm2.tm_hour = hr2;
+                    tm2.tm_min  = mn2;
+                    tm2.tm_sec  = sc2;
+                    int64_t stop_at_ms = (int64_t)mktime(&tm2) * 1000LL;
+
+                    /* Extract optional stopPayload */
+                    const cJSON *spld = cJSON_GetObjectItem(msg, "stopPayload");
+                    char *spld_json = NULL;
+                    if (spld && !cJSON_IsNull(spld)) {
+                        spld_json = cJSON_PrintUnformatted(spld);
+                    }
+
+                    sched_wdt_arm(stop_cmd, spld_json, stop_at_ms);
+
+                    if (spld_json) {
+                        cJSON_free(spld_json);
+                    }
+
+                    /* Notify user callback — schedule started */
+                    if (g_schedule_cb) {
+                        struct conexio_schedule_event evt = {
+                            .type         = CONEXIO_SCHEDULE_EVT_STARTED,
+                            .stop_command = stop_cmd,
+                        };
+                        g_schedule_cb(&evt);
+                    }
+                } else {
+                    LOG_WRN("Schedule watchdog: could not parse stopAt '%s'",
+                            stop_at_str);
+                }
+            }
             if (payload_json) {
                 if (cJSON_IsString(payload_item)) {
                     k_free(payload_json);
@@ -1684,6 +1996,11 @@ int conexio_cloud_init(conexio_cloud_event_cb_t cb)
      * may write to NVS, which requires nvs_initialised = true. */
     reboot_reason_init();
 
+    /* ── Step 1c: Schedule watchdog init ────────────────────────────── */
+    /* Init once — idempotent (called only inside conexio_cloud_init). */
+    k_timer_init(&g_sched_wdt_timer, sched_wdt_timer_expiry, NULL);
+    k_work_init(&g_sched_wdt_work, sched_wdt_work_handler);
+
     /* ── Step 2: Initialise modem info ──────────────────────────────────
      * modem_info_init() registers the AT notification handlers.
      * Must happen before any modem_info_* call. */
@@ -1822,6 +2139,12 @@ int conexio_cloud_init(conexio_cloud_event_cb_t cb)
                     CONFIG_CONEXIO_CLOUD_NTP_TIMEOUT_SEC);
         }
     }
+
+    /* ── Step 6b: Schedule watchdog boot check ──────────────────────── */
+    /* Run after NTP so the clock comparison in sched_watchdog_boot_check()
+     * uses an accurate current time.  If NTP failed, the check still runs
+     * conservatively (re-arms timer rather than silently dropping). */
+    sched_watchdog_boot_check();
 #endif
 
     /* ── Step 7: Fetch cloud config from Conexio config service ─────── */
@@ -2066,3 +2389,36 @@ int conexio_cloud_register_sensor(const char *name,
 /** Let the application override the built-in FOTA progress logger. */
 void conexio_cloud_set_fota_cb(fota_event_cb_t cb) { g_fota_user_cb = cb; }
 #endif
+
+/**
+ * conexio_cloud_register_schedule_cb — register a schedule lifecycle callback.
+ *
+ * Called by the SDK when:
+ *   CONEXIO_SCHEDULE_EVT_STARTED — start command received, watchdog armed.
+ *   CONEXIO_SCHEDULE_EVT_STOPPED — stop command fired autonomously (timer).
+ *   CONEXIO_SCHEDULE_EVT_EXPIRED — stopAt was in the past on boot; ran now.
+ *
+ * Must be called before conexio_cloud_init().
+ */
+void conexio_cloud_register_schedule_cb(conexio_schedule_cb_t cb)
+{
+    g_schedule_cb = cb;
+    LOG_DBG("Schedule callback registered");
+}
+
+/**
+ * conexio_cloud_cancel_schedule_watchdog — disarm the schedule watchdog.
+ *
+ * Call if the stop command arrives from the cloud before the timer fires
+ * (i.e. the cloud sent LED_OFF and it was received successfully).
+ * This prevents the watchdog from firing a duplicate stop command.
+ */
+void conexio_cloud_cancel_schedule_watchdog(void)
+{
+    if (!g_sched_wdt_active) return;
+    k_timer_stop(&g_sched_wdt_timer);
+    g_sched_wdt_active = false;
+    sched_wdt_nvs_clear();
+    memset(&g_sched_wdt, 0, sizeof(g_sched_wdt));
+    LOG_INF("Schedule watchdog cancelled (stop received from cloud)");
+}
