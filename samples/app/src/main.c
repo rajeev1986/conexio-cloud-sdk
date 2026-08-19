@@ -72,7 +72,8 @@ static K_SEM_DEFINE(cloud_connected_sem, 0, 1);
  *       return sensor_value_to_double(&val);
  *   }
  *
-/* Return NAN to skip a reading for a given cycle (sensor unavailable). */
+ * Return NAN to skip a reading for a given cycle (sensor unavailable).
+ */
 static double read_temperature(void *arg)
 {
     ARG_UNUSED(arg);
