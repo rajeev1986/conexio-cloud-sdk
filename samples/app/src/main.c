@@ -33,6 +33,7 @@
 #include <zephyr/drivers/sensor.h>
 #include <zephyr/random/random.h>
 #include <zephyr/logging/log.h>
+#include <math.h>                  /* NAN — returned by read_battery_mv on failure */
 
 /* nPM1300 fuel gauge — battery voltage and state-of-charge */
 #include "fuel_gauge.h"
