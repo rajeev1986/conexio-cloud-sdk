@@ -30,8 +30,12 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/sensor.h>
 #include <zephyr/random/random.h>
 #include <zephyr/logging/log.h>
+
+/* nPM1300 fuel gauge — battery voltage and state-of-charge */
+#include "fuel_gauge.h"
 
 LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
 
@@ -56,6 +60,17 @@ static const struct gpio_dt_spec g_led = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
 /* ── Alert threshold limits ───────────────────────────────────────────── */
 #define ALERT_THRESHOLD_MIN        0       /* 0 = disabled                          */
 #define ALERT_THRESHOLD_MAX        200     /* Covers full sensor range              */
+
+/* ── nPM1300 fuel gauge device handles ───────────────────────────────── */
+/*
+ * pmic_charger is the nPM1300 charger sub-device used by the nRF Fuel Gauge
+ * library to read voltage, current, temperature, and charge status.
+ * Both nodes are defined in conexio_stratus_pro_common.dtsi.
+ */
+static const struct device *pmic_charger = DEVICE_DT_GET(DT_NODELABEL(pmic_charger));
+
+/* Flag set once fuel_gauge_init() has succeeded — guards read_battery_mv. */
+static bool g_fuel_gauge_ready = false;
 
 /* Semaphore given when MQTT connects — gates the immediate boot publish. */
 static K_SEM_DEFINE(cloud_connected_sem, 0, 1);
@@ -86,6 +101,51 @@ static double read_humidity(void *arg)
     ARG_UNUSED(arg);
     /* Simulated: random value in [50.0, 80.0] % with 0.1 resolution */
     return 50.0 + (double)(sys_rand32_get() % 301) * 0.1;
+}
+
+/* ── Battery voltage from nPM1300 fuel gauge ──────────────────────────── */
+/*
+ * Reads SENSOR_CHAN_GAUGE_VOLTAGE from the nPM1300 pmic_charger node and
+ * returns the value in millivolts so the SDK publishes it as _battery_mv.
+ *
+ * Replaces the modem AT%XVBAT reading (CONFIG_CONEXIO_CLOUD_AUTO_BATTERY=n):
+ *   - Higher accuracy: nPM1300 measures actual battery terminal voltage
+ *   - Reflects true cell voltage, not the VDDMAIN rail seen by the modem
+ *
+ * Returns NAN if the fuel gauge has not been initialised or the read fails —
+ * the SDK will skip _battery_mv for that publish cycle rather than sending 0.
+ */
+static double read_battery_mv(void *arg)
+{
+    ARG_UNUSED(arg);
+
+    if (!g_fuel_gauge_ready) {
+        return (double)NAN;
+    }
+
+    struct sensor_value voltage;
+
+    int ret = sensor_sample_fetch(pmic_charger);
+    if (ret < 0) {
+        LOG_WRN("fuel gauge: sensor_sample_fetch failed (%d)", ret);
+        return (double)NAN;
+    }
+
+    ret = sensor_channel_get(pmic_charger, SENSOR_CHAN_GAUGE_VOLTAGE, &voltage);
+    if (ret < 0) {
+        LOG_WRN("fuel gauge: sensor_channel_get GAUGE_VOLTAGE failed (%d)", ret);
+        return (double)NAN;
+    }
+
+    /* SENSOR_CHAN_GAUGE_VOLTAGE: val1 = whole Volts, val2 = micro-Volts fraction.
+     * Convert to millivolts: (val1 * 1e6 + val2) / 1000 */
+    double voltage_mv = ((double)voltage.val1 * 1000.0) +
+                        ((double)voltage.val2 / 1000.0);
+
+    LOG_DBG("fuel gauge: battery %.3f V (%d mV)",
+            voltage_mv / 1000.0, (int)voltage_mv);
+
+    return voltage_mv;
 }
 
 /* ── Command handlers — hardware-specific only ────────────────────────── */
@@ -279,6 +339,11 @@ int main(void)
      * The SDK calls these before each publish — no send_metric in loop. */
     conexio_cloud_register_sensor("temperature", read_temperature, NULL);
     conexio_cloud_register_sensor("humidity",    read_humidity,    NULL);
+    /* _battery_mv from nPM1300 fuel gauge — replaces modem AT%XVBAT.
+     * Registered with the metric name "_battery_mv" so the SDK publishes
+     * it under that exact key rather than double-publishing alongside the
+     * auto-battery metric (which is disabled via CONFIG_CONEXIO_CLOUD_AUTO_BATTERY=n). */
+    conexio_cloud_register_sensor("_battery_mv", read_battery_mv, NULL);
 
     /* ── Register application commands ───────────────────────────────
      * SDK built-ins: REBOOT, SET_INTERVAL, FIRMWARE_UPDATE
@@ -320,6 +385,20 @@ int main(void)
      * The SDK stores the stop command + stopAt in NVS so LED_OFF runs even
      * if the device loses connectivity after receiving LED_ON.            */
     conexio_cloud_register_schedule_cb(on_schedule);
+
+    /* ── nPM1300 fuel gauge init ──────────────────────────────────────────
+     * Initialises the nRF Fuel Gauge library with the battery model and
+     * the initial voltage/current/temperature readings from the nPM1300.
+     * Must happen before conexio_cloud_init() so read_battery_mv() is
+     * ready when the SDK background thread calls it on the first publish. */
+    if (!device_is_ready(pmic_charger)) {
+        LOG_ERR("pmic_charger device not ready — battery voltage unavailable");
+    } else if (fuel_gauge_init(pmic_charger) < 0) {
+        LOG_ERR("fuel_gauge_init failed — battery voltage unavailable");
+    } else {
+        g_fuel_gauge_ready = true;
+        LOG_INF("nPM1300 fuel gauge initialised");
+    }
 
     /* ── Single SDK init — handles everything ─────────────────────────
      * LTE connect → NTP sync → config fetch → cert provision →

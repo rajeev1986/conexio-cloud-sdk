@@ -3,28 +3,30 @@ cmake_minimum_required(VERSION 3.20.0)
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(app)
 
-# Application only provides main.c — all SDK modules are compiled by the
-# SDK Zephyr module CMakeLists.txt based on Kconfig selections.
+# Application sources
 target_sources(app PRIVATE
   src/main.c
 )
 
 # ── cJSON include path ────────────────────────────────────────────────────────
-# CONFIG_CONEXIO_CLOUD selects CONFIG_CJSON_LIB which builds libcjson.a via
-# cmake-ext and links it automatically. Only the include path is needed here.
 target_include_directories(app PRIVATE
   ${ZEPHYR_CJSON_MODULE_DIR}
 )
 
+# ── nPM1300 fuel gauge ────────────────────────────────────────────────────────
+# Compile fuel_gauge.c from the conexio_stratus npm1300 sample and make its
+# battery_model.inc (battery lookup table) visible to the compiler.
+set(FUEL_GAUGE_SAMPLE_DIR
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../../../conexio-firmware-sdk/samples/conexio_stratus/npm1300_fuel_gauge/src
+)
+
+target_sources(app PRIVATE ${FUEL_GAUGE_SAMPLE_DIR}/fuel_gauge.c)
+
+# battery_model.inc is #include'd directly by fuel_gauge.c — it must be
+# on the compiler search path as a plain include, not a target_sources entry.
+target_include_directories(app PRIVATE ${FUEL_GAUGE_SAMPLE_DIR})
+
 # ── Embed AWS Root CA as a binary include ─────────────────────────────────────
-# AmazonRootCA1.pem is the TLS trust anchor for AWS IoT Core MQTT.
-# It is public, static, and identical for every device — safe to embed.
-#
-# The device certificate and private key are NOT embedded here.
-# They are provisioned into the modem by the conexio-stratus-provision sample
-# (fleet provisioning via AT%KEYGEN + CreateCertificateFromCsr) and are
-# verified at runtime by cert_store_provision_from_config() in cert_store.c.
-# Flash conexio-stratus-provision once per device before flashing this app.
 set(CERT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/certs)
 
 generate_inc_file_for_target(app

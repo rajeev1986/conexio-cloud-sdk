@@ -8,10 +8,15 @@
  * LED GPIO — inherited from conexio_stratus_pro_common.dtsi:
  *   led0 alias → gpio0 pin 25, GPIO_ACTIVE_HIGH
  *
- * No additional node definitions needed — the board DTS already provides:
- *   - &gpio0 { status = "okay"; }
- *   - leds { led_0 { gpios = <&gpio0 25 GPIO_ACTIVE_HIGH>; }; }
- *   - aliases { led0 = &led0; }
- *
- * Add any application-specific node overrides below.
+ * nPM1300 fuel gauge — I2C pull-ups for pmic_charger on i2c2:
+ *   The nPM1300 PMIC (npm1300@6b) and its pmic_charger node are defined
+ *   in conexio_stratus_pro_common.dtsi. Only the i2c2 pin pull-up needs
+ *   to be enabled here to reliably communicate with the PMIC over I2C.
  */
+
+/* Enable I2C pull-ups for nPM1300 PMIC communication */
+&i2c2_default {
+	group1 {
+		bias-pull-up;
+	};
+};
