@@ -14,17 +14,11 @@ target_include_directories(app PRIVATE
 )
 
 # ── nPM1300 fuel gauge ────────────────────────────────────────────────────────
-# Compile fuel_gauge.c from the conexio_stratus npm1300 sample and make its
-# battery_model.inc (battery lookup table) visible to the compiler.
-set(FUEL_GAUGE_SAMPLE_DIR
-  ${CMAKE_CURRENT_SOURCE_DIR}/../../../../conexio-firmware-sdk/samples/conexio_stratus/npm1300_fuel_gauge/src
-)
-
-target_sources(app PRIVATE ${FUEL_GAUGE_SAMPLE_DIR}/fuel_gauge.c)
-
-# battery_model.inc is #include'd directly by fuel_gauge.c — it must be
-# on the compiler search path as a plain include, not a target_sources entry.
-target_include_directories(app PRIVATE ${FUEL_GAUGE_SAMPLE_DIR})
+# fuel_gauge.c, fuel_gauge.h, and battery_model.inc are copied from
+# conexio_stratus/npm1300_fuel_gauge/src into this app's src/ directory.
+# battery_model.inc is #include'd directly by fuel_gauge.c so it only needs
+# to be on the same search path as fuel_gauge.c — no extra include dir needed.
+target_sources(app PRIVATE src/fuel_gauge.c)
 
 # ── Embed AWS Root CA as a binary include ─────────────────────────────────────
 set(CERT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/certs)
