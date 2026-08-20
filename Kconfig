@@ -83,30 +83,34 @@ config CONEXIO_CLOUD_CONFIG_CACHE_SEC
 	  Set to 3600 (1 hour) by default — the config changes rarely.
 
 # ── Static broker override (skip config_fetch) ───────────────────────────────
-# Use this to bypass the Conexio config service for development/testing.
-# Set CONEXIO_CLOUD_STATIC_BROKER to your AWS IoT endpoint and
-# CONEXIO_CLOUD_STATIC_ROOT_CA_URL to where the Root CA should be fetched from.
+# Points all devices to the Conexio Cloud MQTT endpoint by default.
+# Users do not need to set anything — these defaults are correct for all
+# Conexio Cloud SDK deployments.
+# Override only if self-hosting the Conexio Cloud backend.
 
 config CONEXIO_CLOUD_STATIC_BROKER_ENABLED
 	bool "Use static broker (bypasses config service)"
-	default n
+	default y
 	help
-	  Enable to bypass config.conexio.io and connect directly to a
-	  hardcoded MQTT broker. Set the hostname below.
+	  Connects directly to the Conexio Cloud MQTT broker without going
+	  through the config service. Enabled by default — the broker and
+	  Root CA URL below are the correct production values for all devices.
+	  Disable only if self-hosting the Conexio config service.
 
 config CONEXIO_CLOUD_STATIC_BROKER
-	string "Static MQTT broker hostname"
-	default "a2t1ogibbsuad8-ats.iot.us-east-1.amazonaws.com"
+	string "Conexio Cloud MQTT broker hostname"
+	default "mqtt.cloud.conexiotech.com"
 	depends on CONEXIO_CLOUD_STATIC_BROKER_ENABLED
 	help
-	  AWS IoT Core MQTT endpoint to connect to when static broker is enabled.
+	  Conexio Cloud MQTT endpoint. Do not change unless self-hosting.
 
 config CONEXIO_CLOUD_STATIC_ROOT_CA_URL
-	string "Static Root CA download URL"
+	string "Root CA download URL"
 	default "https://www.amazontrust.com/repository/AmazonRootCA1.pem"
 	depends on CONEXIO_CLOUD_STATIC_BROKER_ENABLED
 	help
-	  URL to download the AWS Root CA PEM when using a static broker.
+	  URL to download the Root CA PEM. The default covers the Conexio Cloud
+	  endpoint (backed by AWS ACM). Do not change unless self-hosting.
 
 config CONEXIO_CLOUD_STATIC_DEVICE_ID_ENABLED
 	bool "Use static device ID (overrides IMEI)"
