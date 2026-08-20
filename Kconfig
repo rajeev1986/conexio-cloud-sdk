@@ -62,26 +62,26 @@ endchoice
 config CONEXIO_CLOUD_CONFIG_HOST
 	string "Conexio config service hostname"
 	default "config.conexio.io"
-	depends on !CONEXIO_CLOUD_STATIC_BROKER_ENABLED
 	help
 	  The Conexio runtime configuration service. Returns per-workspace
 	  MQTT/HTTP endpoints and credentials based on the device IMEI.
+	  Not used when STATIC_BROKER_ENABLED=y (the default).
 	  Change only if self-hosting the config service.
 
 config CONEXIO_CLOUD_CONFIG_PATH
 	string "Conexio config service path"
 	default "/v1/device-config"
-	depends on !CONEXIO_CLOUD_STATIC_BROKER_ENABLED
 	help
 	  Path on the config service. The SDK appends ?imei=<IMEI> automatically.
+	  Not used when STATIC_BROKER_ENABLED=y (the default).
 
 config CONEXIO_CLOUD_CONFIG_CACHE_SEC
 	int "Config cache TTL (seconds)"
 	default 3600
 	range 300 86400
-	depends on !CONEXIO_CLOUD_STATIC_BROKER_ENABLED
 	help
 	  How long to cache the fetched config before re-fetching.
+	  Not used when STATIC_BROKER_ENABLED=y (the default).
 
 # ── Static broker override (skip config_fetch) ───────────────────────────────
 # Points all devices to the Conexio Cloud MQTT endpoint by default.
