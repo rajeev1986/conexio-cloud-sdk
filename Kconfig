@@ -1,16 +1,15 @@
 # =============================================================================
-# Conexio Cloud SDK — Phase 2
-# Runtime config fetch — zero endpoint configuration in prj.conf.
+# Conexio Cloud SDK — Kconfig
 #
 # The only option your application needs to set is:
 #   CONFIG_CONEXIO_CLOUD=y
 #
-# Everything else (cloud host, API key, certificates) is fetched from the
-# Conexio config endpoint at runtime using the device's IMEI as identity.
+# The MQTT broker, Root CA, and all cloud connection details are built into
+# the SDK defaults below — no endpoint configuration required in prj.conf.
 # =============================================================================
 
 menuconfig CONEXIO_CLOUD
-	bool "Conexio Cloud SDK v2 (zero-config)"
+	bool "Conexio Cloud SDK (zero-config)"
 	select NRF_MODEM_LIB
 	select LTE_LINK_CONTROL
 	select NETWORKING
@@ -24,9 +23,9 @@ menuconfig CONEXIO_CLOUD
 	select HTTP_CLIENT
 	select HWINFO
 	help
-	  Enables the Conexio Cloud SDK v2 for nRF91xx devices.
-	  Cloud endpoint, API key, and certificates are fetched automatically
-	  at runtime — no endpoint configuration required in prj.conf.
+	  Enables the Conexio Cloud SDK for nRF91xx devices.
+	  Set CONFIG_CONEXIO_CLOUD=y — the broker, Root CA, and cloud
+	  connection details are handled by the SDK defaults below.
 	  HWINFO is selected automatically to enable reboot reason tracking.
 
 if CONEXIO_CLOUD
@@ -55,14 +54,15 @@ config CONEXIO_CLOUD_HTTP
 
 endchoice
 
-# ── Config fetch endpoint ─────────────────────────────────────────────────────
-# This is the ONLY endpoint ever set in firmware — it is the same for
-# every Conexio customer. The response contains the customer-specific
-# MQTT/HTTP endpoints and API keys.
+# ── Config fetch endpoint (advanced — not used when STATIC_BROKER_ENABLED=y) ──
+# These options describe the Conexio runtime config service path.
+# With the default STATIC_BROKER_ENABLED=y they are not used.
+# Relevant only when building a self-hosted config service.
 
 config CONEXIO_CLOUD_CONFIG_HOST
 	string "Conexio config service hostname"
 	default "config.conexio.io"
+	depends on !CONEXIO_CLOUD_STATIC_BROKER_ENABLED
 	help
 	  The Conexio runtime configuration service. Returns per-workspace
 	  MQTT/HTTP endpoints and credentials based on the device IMEI.
@@ -71,6 +71,7 @@ config CONEXIO_CLOUD_CONFIG_HOST
 config CONEXIO_CLOUD_CONFIG_PATH
 	string "Conexio config service path"
 	default "/v1/device-config"
+	depends on !CONEXIO_CLOUD_STATIC_BROKER_ENABLED
 	help
 	  Path on the config service. The SDK appends ?imei=<IMEI> automatically.
 
@@ -78,9 +79,9 @@ config CONEXIO_CLOUD_CONFIG_CACHE_SEC
 	int "Config cache TTL (seconds)"
 	default 3600
 	range 300 86400
+	depends on !CONEXIO_CLOUD_STATIC_BROKER_ENABLED
 	help
 	  How long to cache the fetched config before re-fetching.
-	  Set to 3600 (1 hour) by default — the config changes rarely.
 
 # ── Static broker override (skip config_fetch) ───────────────────────────────
 # Points all devices to the Conexio Cloud MQTT endpoint by default.
@@ -116,22 +117,22 @@ config CONEXIO_CLOUD_STATIC_DEVICE_ID_ENABLED
 	bool "Use static device ID (overrides IMEI)"
 	default n
 	help
-	  Enable to use a hardcoded AWS IoT Thing name instead of the modem
-	  IMEI as the device ID. Useful for testing with a manually created Thing.
+	  Enable to use a hardcoded device ID instead of the modem IMEI.
+	  Useful for testing with a manually provisioned device identity.
 
 config CONEXIO_CLOUD_STATIC_DEVICE_ID
-	string "Static device ID / AWS IoT Thing name"
+	string "Static device ID"
 	default "stratus-pro-001"
 	depends on CONEXIO_CLOUD_STATIC_DEVICE_ID_ENABLED
 	help
 	  Device ID sent in telemetry and used in MQTT topics.
-	  Must match the AWS IoT Thing name exactly.
+	  Must match the provisioned device identity exactly.
 
 # ── Telemetry ─────────────────────────────────────────────────────────────────
 
 config CONEXIO_CLOUD_INTERVAL_SEC
 	int "Telemetry publish interval (seconds)"
-	default 60
+	default 3600
 	range 10 3600
 
 config CONEXIO_CLOUD_METRIC_QUEUE_SIZE
@@ -178,9 +179,11 @@ config CONEXIO_CLOUD_AUTO_BATTERY
 	bool "Auto-include battery voltage (_battery_mv) in every payload"
 	default n
 	help
-	  Reads battery voltage via the modem's AT%XVBAT command and adds it as
-	  the _battery_mv metric in every telemetry payload.
-	  Only supported on hardware where VDDMAIN is connected to the modem.
+	  Reads battery voltage via the modem's AT%%XVBAT command and adds it
+	  as the _battery_mv metric in every telemetry payload.
+	  For Conexio Stratus Pro with nPM1300, register a sensor callback using
+	  conexio_cloud_register_sensor("_battery_mv", read_battery_mv, NULL)
+	  to use the more accurate fuel gauge reading instead.
 
 config CONEXIO_CLOUD_MODEM_INFO_REFRESH
 	int "Modem info refresh interval (publishes)"
@@ -277,10 +280,10 @@ config CONEXIO_CLOUD_FOTA
 	select DOWNLOADER
 	select STREAM_FLASH
 	help
-	  Enables firmware update via AWS IoT Jobs and MCUboot.
-	  When a job is created on the Conexio Console Firmware page, the SDK
-	  receives a FIRMWARE_UPDATE command, downloads the binary from the
-	  pre-signed S3 URL, and installs it via MCUboot on next reboot.
+	  Enables firmware updates via the Conexio Cloud Console.
+	  When a firmware job is created, the SDK receives a FIRMWARE_UPDATE
+	  command, downloads the binary from the pre-signed download URL, and
+	  installs it via MCUboot on next reboot.
 	  Requires a dual-bank MCUboot partition layout in the board DTS.
 	  Include <fota.h> in your application for the event callback type.
 
