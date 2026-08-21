@@ -17,6 +17,8 @@
 #include <zephyr/net/http/parser_url.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/reboot.h>
+#include <zephyr/fs/nvs.h>
+#include <zephyr/storage/flash_map.h>
 #include <cJSON.h>
 #include <cJSON_os.h>
 #include <stdio.h>
@@ -41,6 +43,93 @@ static fota_event_cb_t  g_cb            = NULL;
 static bool             g_fota_active   = false;
 static char             g_device_id[32] = {0};
 static char             g_current_job_id[64] = {0};
+
+/* ── NVS: persist pending SUCCEEDED publish across reboot ─────────────────── */
+/*
+ * When FOTA completes and the device reboots, MQTT is not yet connected so
+ * job_status_publish("SUCCEEDED") fails. We persist the completed job ID to
+ * NVS before the reboot so fota_check_and_execute() can publish SUCCEEDED
+ * on the first MQTT connect of the new firmware.
+ *
+ * NVS key 0x0005 is reserved for this purpose.
+ * Layout in NVS record: "<device_id>\n<job_id>\0"  (max 32+1+64+1 = 98 bytes)
+ *
+ * NVS key allocation (from conexio_cloud.c comment):
+ *   0x0001 reboot counter
+ *   0x0002 reboot reason
+ *   0x0003 schedule watchdog active flag
+ *   0x0004 schedule watchdog record
+ *   0x0005 FOTA pending SUCCEEDED  ← this file
+ *   0x0010–0x0012, 0x2000+ offline buffer
+ */
+#define FOTA_PENDING_NVS_ID  0x0005U
+#define FOTA_PENDING_MAX     98U    /* device_id(31) + '\n'(1) + job_id(63) + '\0'(1) + margin */
+
+#define NVS_PARTITION        storage_partition
+#define NVS_PARTITION_DEVICE FIXED_PARTITION_DEVICE(NVS_PARTITION)
+#define NVS_PARTITION_OFFSET FIXED_PARTITION_OFFSET(NVS_PARTITION)
+
+static struct nvs_fs  g_fota_nvs;
+static bool           g_fota_nvs_ready = false;
+
+static int fota_nvs_init(void)
+{
+    if (g_fota_nvs_ready) return 0;
+
+    struct flash_pages_info info;
+    g_fota_nvs.flash_device = NVS_PARTITION_DEVICE;
+    if (!device_is_ready(g_fota_nvs.flash_device)) return -ENODEV;
+    g_fota_nvs.offset = NVS_PARTITION_OFFSET;
+    int rc = flash_get_page_info_by_offs(g_fota_nvs.flash_device,
+                                         g_fota_nvs.offset, &info);
+    if (rc) return rc;
+    g_fota_nvs.sector_size  = info.size;
+    g_fota_nvs.sector_count = 2U;
+    rc = nvs_mount(&g_fota_nvs);
+    if (rc) return rc;
+    g_fota_nvs_ready = true;
+    return 0;
+}
+
+/* Persist "<device_id>\n<job_id>" to NVS so SUCCEEDED can be sent after reboot */
+static void fota_pending_save(const char *device_id, const char *job_id)
+{
+    if (fota_nvs_init() != 0) return;
+    char buf[FOTA_PENDING_MAX];
+    int len = snprintf(buf, sizeof(buf), "%s\n%s", device_id, job_id);
+    if (len < 0 || len >= (int)sizeof(buf)) return;
+    nvs_write(&g_fota_nvs, FOTA_PENDING_NVS_ID, buf, (uint16_t)(len + 1));
+    LOG_INF("FOTA: pending SUCCEEDED saved for job %s", job_id);
+}
+
+/* Load and clear pending job from NVS. Returns true if a pending job was found. */
+static bool fota_pending_load(char *device_id_out, size_t dev_size,
+                               char *job_id_out,    size_t job_size)
+{
+    if (fota_nvs_init() != 0) return false;
+    char buf[FOTA_PENDING_MAX];
+    ssize_t rc = nvs_read(&g_fota_nvs, FOTA_PENDING_NVS_ID, buf, sizeof(buf));
+    if (rc <= 0) return false;
+    buf[sizeof(buf) - 1] = '\0';
+
+    /* Split on '\n' */
+    char *sep = strchr(buf, '\n');
+    if (!sep) return false;
+    *sep = '\0';
+    strncpy(device_id_out, buf,    dev_size - 1);
+    strncpy(job_id_out,    sep+1,  job_size - 1);
+    device_id_out[dev_size - 1] = '\0';
+    job_id_out[job_size - 1]    = '\0';
+    return (device_id_out[0] != '\0' && job_id_out[0] != '\0');
+}
+
+/* Erase the pending record after successful publish */
+static void fota_pending_clear(void)
+{
+    if (!g_fota_nvs_ready) return;
+    nvs_delete(&g_fota_nvs, FOTA_PENDING_NVS_ID);
+    LOG_DBG("FOTA: pending SUCCEEDED cleared");
+}
 
 /* ── AWS IoT Jobs status reporting ────────────────────────────────────────── */
 /*
@@ -114,12 +203,32 @@ static void fota_download_handler(const struct fota_download_evt *evt)
         app_evt.type              = FOTA_EVT_PROGRESS;
         app_evt.data.progress_pct = evt->progress;
         g_cb(&app_evt);
-        LOG_INF("FOTA download: %d%%", evt->progress);
+        /* Progress bar: overwrite same line using \r (no newline).
+         * 20-char bar: filled with '#', empty with '.'.
+         * Only print when percentage changes to reduce serial noise. */
+        {
+            static int last_pct = -1;
+            int pct = evt->progress;
+            if (pct != last_pct) {
+                last_pct = pct;
+                int filled = pct / 5;   /* 0-20 blocks */
+                /* \r returns cursor to line start; no \n so it overwrites */
+                printk("\r\033[KFOTA [");
+                for (int i = 0; i < 20; i++) {
+                    printk(i < filled ? "#" : ".");
+                }
+                printk("] %3d%%", pct);
+                if (pct >= 100) {
+                    printk("\n");   /* final newline at 100% */
+                    last_pct = -1; /* reset for next FOTA */
+                }
+            }
+        }
         /* Do NOT publish IoT Job status on progress events — the modem
          * radio is occupied with the HTTPS download and any MQTT publish
          * attempt will compete for the socket, causing broker disconnects.
          * Status is reported at start (IN_PROGRESS), completion (installing),
-         * and post-reboot confirmation (SUCCEEDED/FAILED) only. */
+         * and post-reboot confirmation (SUCCEEDED) only. */
         break;
 
     case FOTA_DOWNLOAD_EVT_FINISHED:
@@ -360,18 +469,39 @@ int fota_check_and_execute(void)
         return 0;
     }
 
+    /* Post-reboot: check if a SUCCEEDED publish is pending from a completed FOTA.
+     * The job_status_publish("SUCCEEDED") in fota_confirm() can't run immediately
+     * after reboot because MQTT isn't connected yet. It is persisted to NVS and
+     * published here on the first MQTT CONNACK of the new firmware. */
+    char pending_dev[32] = {0};
+    char pending_job[64] = {0};
+    if (fota_pending_load(pending_dev, sizeof(pending_dev),
+                          pending_job, sizeof(pending_job))) {
+        LOG_INF("FOTA: publishing pending SUCCEEDED for job %s", pending_job);
+
+        char topic[128];
+        int topic_len = snprintf(topic, sizeof(topic),
+                                 "$aws/things/%s/jobs/%s/update",
+                                 pending_dev, pending_job);
+        if (topic_len > 0 && topic_len < (int)sizeof(topic)) {
+            const char *payload = "{\"status\":\"SUCCEEDED\"}";
+            int ret = transport_publish_raw(topic, payload, strlen(payload));
+            if (ret == 0) {
+                LOG_INF("FOTA: SUCCEEDED published — dashboard will update to Completed");
+                fota_pending_clear();
+            } else {
+                /* Will retry on next CONNACK */
+                LOG_WRN("FOTA: SUCCEEDED publish failed (%d) — will retry", ret);
+            }
+        }
+    }
+
     /*
      * In this SDK implementation FOTA is entirely command-driven.
      * The Conexio Console Firmware page creates an AWS IoT Job and
      * sends it to the device as a FIRMWARE_UPDATE command on the
      * devices/<id>/commands MQTT topic.  The builtin_on_firmware_update()
      * handler in conexio_cloud.c picks it up and calls fota_handle_command().
-     *
-     * This function is called on every CONNECTED event as a hook point.
-     * It is intentionally a no-op here because there is no polling of the
-     * AWS IoT Jobs API ($aws/things/<id>/jobs/$next/get).  If you need
-     * native Jobs-API integration (e.g. to pick up jobs queued while offline),
-     * add the jobs GET request here.
      */
     return 0;
 }
@@ -395,9 +525,12 @@ void fota_confirm(void)
                 "device will revert to previous firmware on next reboot", ret);
     } else {
         LOG_INF("Firmware update confirmed — MCUboot will not revert");
-        /* Notify AWS IoT Jobs: job succeeded — triggers EventBridge → DynamoDB
-         * → WebSocket → frontend status update to 'Completed' */
-        job_status_publish("SUCCEEDED", NULL, NULL, -1);
+        /* Persist job ID to NVS so SUCCEEDED can be published after MQTT reconnects.
+         * We cannot publish now — MQTT is not connected immediately after reboot.
+         * fota_check_and_execute() will pick this up on the first CONNACK. */
+        if (g_device_id[0] && g_current_job_id[0]) {
+            fota_pending_save(g_device_id, g_current_job_id);
+        }
         struct fota_event evt = { .type = FOTA_EVT_CONFIRMED };
         if (g_cb) g_cb(&evt);
     }
