@@ -19,6 +19,7 @@
 #include <zephyr/sys/reboot.h>
 #include <cJSON.h>
 #include <cJSON_os.h>
+#include <stdio.h>
 #include <string.h>
 #include "fota.h"
 
