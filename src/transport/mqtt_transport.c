@@ -581,7 +581,8 @@ int transport_publish_raw(const char *topic, const char *payload, size_t len)
     return ret;
 }
 
-
+/*
+ * transport_poll — drive the MQTT event loop for one timeout period.
  *
  * Called repeatedly by the SDK background thread.  It:
  *   1. Waits up to `timeout` for incoming data on the MQTT socket.
