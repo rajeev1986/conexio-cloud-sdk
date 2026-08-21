@@ -22,7 +22,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "fota.h"
-#include "../transport.h"   /* transport_publish_raw() */
+#include "transport.h"     /* transport_publish_raw() */
 
 LOG_MODULE_REGISTER(fota, LOG_LEVEL_INF);
 
