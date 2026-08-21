@@ -2199,10 +2199,24 @@ int conexio_cloud_init(conexio_cloud_event_cb_t cb)
     /* ── Step 11: FOTA init ─────────────────────────────────────────── */
 #if defined(CONFIG_CONEXIO_CLOUD_FOTA)
     fota_init(g_device_id, sdk_fota_event_handler);
-    /* Post-FOTA boot: confirm the new image so MCUboot won't roll back */
-    if (boot_is_img_confirmed() == 0) {
-        LOG_INF("Post-FOTA boot — confirming new firmware");
-        fota_confirm();
+    /* Post-FOTA boot: confirm the new image so MCUboot won't roll back.
+     *
+     * On nRF9151/nRF9161 with TF-M + BOOT_SWAP_USING_MOVE, the swap state
+     * magic field in the primary slot may read as BOOT_MAGIC_UNSET after a
+     * successful swap, causing boot_is_img_confirmed() to return true
+     * prematurely — the confirm is then skipped and MCUboot reverts.
+     *
+     * Fix: always call boot_write_img_confirmed() unconditionally.
+     * The call is idempotent — writing BOOT_FLAG_SET when already set
+     * is a no-op from MCUboot's perspective.
+     */
+    {
+        int confirm_ret = boot_write_img_confirmed();
+        if (confirm_ret == 0) {
+            LOG_INF("Firmware image confirmed (MCUboot rollback prevention)");
+        } else {
+            LOG_WRN("boot_write_img_confirmed failed (%d)", confirm_ret);
+        }
     }
 #endif
 
