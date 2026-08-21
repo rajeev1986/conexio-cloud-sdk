@@ -35,6 +35,13 @@
 #include <zephyr/logging/log.h>
 #include <math.h>                  /* NAN — returned by read_battery_mv on failure */
 
+/* App firmware version from VERSION file — generated at build time */
+#if __has_include(<app_version.h>)
+#  include <app_version.h>
+#else
+#  define APP_VERSION_STRING "unknown"
+#endif
+
 /* nPM1300 fuel gauge — battery voltage and state-of-charge */
 #include "fuel_gauge.h"
 
@@ -318,8 +325,9 @@ static void cloud_event_handler(const struct conexio_cloud_event *evt)
 
 int main(void)
 {
-    LOG_INF("=== Conexio Advanced Sample (SDK %s) ===",
-            conexio_cloud_version());
+    LOG_INF("=== Conexio Advanced Sample ===");
+    LOG_INF("App firmware : v%s", APP_VERSION_STRING);
+    LOG_INF("SDK version  : %s", conexio_cloud_version());
 
     /* ── LED GPIO init ────────────────────────────────────────────────
      * Configure the on-board LED as output, initially OFF.
