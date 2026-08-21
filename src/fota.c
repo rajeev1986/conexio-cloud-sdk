@@ -47,6 +47,9 @@ static char             g_current_job_id[64] = {0};
  * Publish a status update to the AWS IoT Jobs service so the backend
  * EventBridge rule can update DynamoDB and the frontend in real time.
  *
+ * Uses snprintf-only construction (no cJSON/heap) so it is safe to call
+ * from the downloader thread which has a small stack (CONFIG_DOWNLOADER_STACK_SIZE).
+ *
  * Topic: $aws/things/{deviceId}/jobs/{jobId}/update
  * Payload examples:
  *   {"status":"IN_PROGRESS","statusDetails":{"step":"downloading","progress":"42"}}
@@ -59,44 +62,42 @@ static void job_status_publish(const char *status, const char *step,
 {
     if (!g_device_id[0] || !g_current_job_id[0]) return;
 
-    /* Build topic */
+    /* Build topic — stack allocated, bounded */
     char topic[128];
     int topic_len = snprintf(topic, sizeof(topic),
                              "$aws/things/%s/jobs/%s/update",
                              g_device_id, g_current_job_id);
     if (topic_len < 0 || topic_len >= (int)sizeof(topic)) return;
 
-    /* Build payload with cJSON */
-    cJSON *root = cJSON_CreateObject();
-    if (!root) return;
+    /* Build payload with snprintf — no heap allocation, safe on small stacks */
+    char payload[192];
+    int payload_len;
 
-    cJSON_AddStringToObject(root, "status", status);
-
-    if (step || reason || progress_pct >= 0) {
-        cJSON *details = cJSON_AddObjectToObject(root, "statusDetails");
-        if (details) {
-            if (step)            cJSON_AddStringToObject(details, "step", step);
-            if (reason)          cJSON_AddStringToObject(details, "reason", reason);
-            if (progress_pct >= 0) {
-                /* statusDetails values must be strings per AWS IoT Jobs API */
-                char pct_str[8];
-                snprintf(pct_str, sizeof(pct_str), "%d", progress_pct);
-                cJSON_AddStringToObject(details, "progress", pct_str);
-            }
-        }
+    if (step && progress_pct >= 0) {
+        payload_len = snprintf(payload, sizeof(payload),
+            "{\"status\":\"%s\",\"statusDetails\":{\"step\":\"%s\",\"progress\":\"%d\"}}",
+            status, step, progress_pct);
+    } else if (step) {
+        payload_len = snprintf(payload, sizeof(payload),
+            "{\"status\":\"%s\",\"statusDetails\":{\"step\":\"%s\"}}",
+            status, step);
+    } else if (reason) {
+        payload_len = snprintf(payload, sizeof(payload),
+            "{\"status\":\"%s\",\"statusDetails\":{\"reason\":\"%s\"}}",
+            status, reason);
+    } else {
+        payload_len = snprintf(payload, sizeof(payload),
+            "{\"status\":\"%s\"}",
+            status);
     }
+    if (payload_len < 0 || payload_len >= (int)sizeof(payload)) return;
 
-    char *payload = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    if (!payload) return;
-
-    int ret = transport_publish_raw(topic, payload, strlen(payload));
+    int ret = transport_publish_raw(topic, payload, (size_t)payload_len);
     if (ret == 0) {
         LOG_DBG("IoT Job status: %s (step=%s)", status, step ? step : "-");
     } else {
         LOG_WRN("IoT Job status publish failed (%d) — UI may not update", ret);
     }
-    cJSON_free(payload);
 }
 
 
