@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "fota.h"
+#include "../transport.h"   /* transport_publish_raw() */
 
 LOG_MODULE_REGISTER(fota, LOG_LEVEL_INF);
 
@@ -41,7 +42,64 @@ static bool             g_fota_active   = false;
 static char             g_device_id[32] = {0};
 static char             g_current_job_id[64] = {0};
 
-/* ── fota_download callbacks ──────────────────────────────────────────────── */
+/* ── AWS IoT Jobs status reporting ────────────────────────────────────────── */
+/*
+ * Publish a status update to the AWS IoT Jobs service so the backend
+ * EventBridge rule can update DynamoDB and the frontend in real time.
+ *
+ * Topic: $aws/things/{deviceId}/jobs/{jobId}/update
+ * Payload examples:
+ *   {"status":"IN_PROGRESS","statusDetails":{"step":"downloading","progress":"42"}}
+ *   {"status":"IN_PROGRESS","statusDetails":{"step":"installing"}}
+ *   {"status":"SUCCEEDED"}
+ *   {"status":"FAILED","statusDetails":{"reason":"download_error"}}
+ */
+static void job_status_publish(const char *status, const char *step,
+                               const char *reason, int progress_pct)
+{
+    if (!g_device_id[0] || !g_current_job_id[0]) return;
+
+    /* Build topic */
+    char topic[128];
+    int topic_len = snprintf(topic, sizeof(topic),
+                             "$aws/things/%s/jobs/%s/update",
+                             g_device_id, g_current_job_id);
+    if (topic_len < 0 || topic_len >= (int)sizeof(topic)) return;
+
+    /* Build payload with cJSON */
+    cJSON *root = cJSON_CreateObject();
+    if (!root) return;
+
+    cJSON_AddStringToObject(root, "status", status);
+
+    if (step || reason || progress_pct >= 0) {
+        cJSON *details = cJSON_AddObjectToObject(root, "statusDetails");
+        if (details) {
+            if (step)            cJSON_AddStringToObject(details, "step", step);
+            if (reason)          cJSON_AddStringToObject(details, "reason", reason);
+            if (progress_pct >= 0) {
+                /* statusDetails values must be strings per AWS IoT Jobs API */
+                char pct_str[8];
+                snprintf(pct_str, sizeof(pct_str), "%d", progress_pct);
+                cJSON_AddStringToObject(details, "progress", pct_str);
+            }
+        }
+    }
+
+    char *payload = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!payload) return;
+
+    int ret = transport_publish_raw(topic, payload, strlen(payload));
+    if (ret == 0) {
+        LOG_DBG("IoT Job status: %s (step=%s)", status, step ? step : "-");
+    } else {
+        LOG_WRN("IoT Job status publish failed (%d) — UI may not update", ret);
+    }
+    cJSON_free(payload);
+}
+
+
 
 static void fota_download_handler(const struct fota_download_evt *evt)
 {
@@ -52,14 +110,22 @@ static void fota_download_handler(const struct fota_download_evt *evt)
     switch (evt->id) {
 
     case FOTA_DOWNLOAD_EVT_PROGRESS:
-        app_evt.type            = FOTA_EVT_PROGRESS;
+        app_evt.type              = FOTA_EVT_PROGRESS;
         app_evt.data.progress_pct = evt->progress;
         g_cb(&app_evt);
         LOG_INF("FOTA download: %d%%", evt->progress);
+        /* Throttle IoT Jobs status updates — only publish at 0%, 25%, 50%, 75%, 100%
+         * to avoid flooding the MQTT broker with per-chunk updates. */
+        if (evt->progress == 0  || evt->progress == 25 ||
+            evt->progress == 50 || evt->progress == 75 || evt->progress == 100) {
+            job_status_publish("IN_PROGRESS", "downloading", NULL, evt->progress);
+        }
         break;
 
     case FOTA_DOWNLOAD_EVT_FINISHED:
         LOG_INF("FOTA download complete — requesting reboot");
+        /* Report 'installing' — binary is written to flash, MCUboot swap pending */
+        job_status_publish("IN_PROGRESS", "installing", NULL, -1);
         app_evt.type = FOTA_EVT_COMPLETE;
         g_cb(&app_evt);
 
@@ -79,6 +145,7 @@ static void fota_download_handler(const struct fota_download_evt *evt)
     case FOTA_DOWNLOAD_EVT_ERROR:
         LOG_ERR("FOTA download failed");
         g_fota_active = false;
+        job_status_publish("FAILED", NULL, "download_error", -1);
         app_evt.type       = FOTA_EVT_FAILED;
         app_evt.data.error = -EIO;
         g_cb(&app_evt);
@@ -89,6 +156,7 @@ static void fota_download_handler(const struct fota_download_evt *evt)
          * Treat as a fatal error — the download cannot continue. */
         LOG_ERR("FOTA: flash erase timed out — aborting");
         g_fota_active = false;
+        job_status_publish("FAILED", NULL, "erase_timeout", -1);
         app_evt.type       = FOTA_EVT_FAILED;
         app_evt.data.error = -ETIMEDOUT;
         g_cb(&app_evt);
@@ -156,6 +224,9 @@ static int execute_job(const char *job_id, const char *job_document)
 
     struct fota_event start_evt = { .type = FOTA_EVT_STARTED };
     if (g_cb) g_cb(&start_evt);
+
+    /* Notify AWS IoT Jobs that download is starting */
+    job_status_publish("IN_PROGRESS", "downloading", NULL, 0);
 
     /* Split the presigned URL into host and file (path + query string).
      *
@@ -324,6 +395,9 @@ void fota_confirm(void)
                 "device will revert to previous firmware on next reboot", ret);
     } else {
         LOG_INF("Firmware update confirmed — MCUboot will not revert");
+        /* Notify AWS IoT Jobs: job succeeded — triggers EventBridge → DynamoDB
+         * → WebSocket → frontend status update to 'Completed' */
+        job_status_publish("SUCCEEDED", NULL, NULL, -1);
         struct fota_event evt = { .type = FOTA_EVT_CONFIRMED };
         if (g_cb) g_cb(&evt);
     }

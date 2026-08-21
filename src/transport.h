@@ -16,6 +16,7 @@ int  transport_init_with_config(const char *device_id,
 int  transport_connect(void);
 int  transport_disconnect(void);
 int  transport_publish(const char *payload, size_t len);
+int  transport_publish_raw(const char *topic, const char *payload, size_t len);
 void transport_poll(k_timeout_t timeout);
 bool transport_is_connected(void);
 

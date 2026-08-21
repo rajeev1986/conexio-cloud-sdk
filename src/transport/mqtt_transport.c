@@ -548,7 +548,40 @@ int transport_publish(const char *payload, size_t len)
 }
 
 /*
- * transport_poll — drive the MQTT event loop for one timeout period.
+ * transport_publish_raw — publish payload to an arbitrary MQTT topic (QoS 1).
+ *
+ * Used by fota.c to publish AWS IoT Jobs status updates to
+ * $aws/things/{deviceId}/jobs/{jobId}/update without coupling fota.c
+ * to the MQTT client directly.
+ *
+ * @param topic    Full MQTT topic string (null-terminated).
+ * @param payload  Payload bytes to publish.
+ * @param len      Length of payload in bytes.
+ * @return 0 on success, -ENOTCONN if not connected, MQTT error otherwise.
+ */
+int transport_publish_raw(const char *topic, const char *payload, size_t len)
+{
+    if (!connected || !topic || !payload) return -ENOTCONN;
+
+    struct mqtt_publish_param msg = {
+        .message.topic.qos        = MQTT_QOS_1_AT_LEAST_ONCE,
+        .message.topic.topic.utf8 = (uint8_t *)topic,
+        .message.topic.topic.size = strlen(topic),
+        .message.payload.data     = (uint8_t *)payload,
+        .message.payload.len      = len,
+        .message_id               = (uint16_t)(k_uptime_get_32() & 0xFFFF),
+        .dup_flag                 = 0,
+        .retain_flag              = 0,
+    };
+
+    int ret = mqtt_publish(&client, &msg);
+    if (ret) {
+        LOG_ERR("transport_publish_raw: mqtt_publish to '%s' failed (%d)", topic, ret);
+    }
+    return ret;
+}
+
+
  *
  * Called repeatedly by the SDK background thread.  It:
  *   1. Waits up to `timeout` for incoming data on the MQTT socket.
