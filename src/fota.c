@@ -14,6 +14,7 @@
 #include <zephyr/dfu/mcuboot.h>
 #include <zephyr/dfu/flash_img.h>
 #include <net/fota_download.h>
+#include <zephyr/net/http/parser_url.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/reboot.h>
 #include <cJSON.h>
@@ -158,53 +159,94 @@ static int execute_job(const char *job_id, const char *job_document)
     /* Split the presigned URL into host and file (path + query string).
      *
      * fota_download_start() requires host and file as separate arguments.
-     * Passing the full URL as host with file=NULL gives -EINVAL.
+     * The downloader joins them as snprintf("%s/%s", host, file), so file
+     * must NOT have a leading '/'.
      *
-     * URL format: https://<host>/<path>?<query>
-     * We locate the third '/' (after "https://") and split there.
+     * We use http_parser_parse_url() — the same approach as Nordic's own
+     * aws_fota_json.c — instead of manual strchr() for robustness:
+     *   - Handles URLs with explicit port numbers (https://host:443/path)
+     *   - Returns zero-length fields for missing components, no bad pointers
+     *   - Correctly splits path + query into the file string
      *
-     * NCS v3.2.1 fota_download_start() signature:
-     *   int fota_download_start(const char *host, const char *file,
-     *                           int sec_tag, uint8_t pdn_id,
-     *                           size_t fragment_size);
-     *
-     * Pointers must remain valid until download is finished — we use
-     * a static buffer for the host and point file into the original url.
+     * Static buffers: pointers passed to fota_download_start() must remain
+     * valid until the download completes (NCS requirement).
      */
-    static char g_host_buf[128];
-    const char *host_start = url;
-    /* Skip scheme: "https://" or "http://" */
-    const char *after_scheme = strstr(url, "://");
-    if (after_scheme) {
-        after_scheme += 3; /* skip "://" */
-    } else {
-        after_scheme = url;
+    static char g_host_buf[CONFIG_DOWNLOADER_MAX_HOSTNAME_SIZE];
+    static char g_file_buf[CONFIG_DOWNLOADER_MAX_FILENAME_SIZE];
+
+    struct http_parser_url u;
+    http_parser_url_init(&u);
+
+    if (http_parser_parse_url(url, strlen(url), false, &u) != 0) {
+        LOG_ERR("Failed to parse firmware URL");
+        g_fota_active = false;
+        cJSON_Delete(doc);
+        return -EINVAL;
     }
-    /* Find the first '/' after the host */
-    const char *path_start = strchr(after_scheme, '/');
-    const char *file_arg;
-    if (path_start) {
-        /* Copy scheme + host into buffer */
-        size_t host_len = (size_t)(path_start - host_start);
-        if (host_len >= sizeof(g_host_buf)) {
-            host_len = sizeof(g_host_buf) - 1;
-        }
-        memcpy(g_host_buf, host_start, host_len);
-        g_host_buf[host_len] = '\0';
-        /* Strip leading '/' — downloader joins host+file with its own '/'
-         * via snprintf("%s/%s", host, file), so a leading slash gives "//". */
-        file_arg = path_start + 1;
+
+    uint16_t schema_off = u.field_data[UF_SCHEMA].off;
+    uint16_t schema_len = u.field_data[UF_SCHEMA].len;
+    uint16_t host_off   = u.field_data[UF_HOST].off;
+    uint16_t host_len   = u.field_data[UF_HOST].len;
+
+    /* Build "https://hostname" (include port if present) */
+    int host_written;
+    if (u.field_set & (1 << UF_PORT)) {
+        host_written = snprintf(g_host_buf, sizeof(g_host_buf),
+                                "%.*s://%.*s:%u",
+                                schema_len, url + schema_off,
+                                host_len,   url + host_off,
+                                u.port);
     } else {
-        /* No path — use full URL as host, empty file */
-        strncpy(g_host_buf, url, sizeof(g_host_buf) - 1);
-        g_host_buf[sizeof(g_host_buf) - 1] = '\0';
-        file_arg = "/";
+        host_written = snprintf(g_host_buf, sizeof(g_host_buf),
+                                "%.*s://%.*s",
+                                schema_len, url + schema_off,
+                                host_len,   url + host_off);
+    }
+    if (host_written < 0 || host_written >= (int)sizeof(g_host_buf)) {
+        LOG_ERR("FOTA host buffer too small");
+        g_fota_active = false;
+        cJSON_Delete(doc);
+        return -ENOMEM;
+    }
+
+    /* Extract file: path + query, strip the leading '/' so the downloader's
+     * snprintf("%s/%s", host, file) produces one slash, not "//".
+     * Mirrors aws_fota_json.c: url + UF_PATH.off + 1
+     */
+    uint16_t path_off  = u.field_data[UF_PATH].off;
+    uint16_t path_len  = u.field_data[UF_PATH].len;
+    uint16_t query_off = u.field_data[UF_QUERY].off;
+    uint16_t query_len = u.field_data[UF_QUERY].len;
+
+    if (path_len == 0) {
+        LOG_ERR("FOTA URL has no path component");
+        g_fota_active = false;
+        cJSON_Delete(doc);
+        return -EINVAL;
+    }
+
+    int file_written;
+    if (query_len > 0) {
+        /* path (without leading '/') + '?' + query */
+        file_written = snprintf(g_file_buf, sizeof(g_file_buf), "%.*s?%.*s",
+                                path_len - 1, url + path_off + 1,
+                                query_len,    url + query_off);
+    } else {
+        file_written = snprintf(g_file_buf, sizeof(g_file_buf), "%.*s",
+                                path_len - 1, url + path_off + 1);
+    }
+    if (file_written < 0 || file_written >= (int)sizeof(g_file_buf)) {
+        LOG_ERR("FOTA file buffer too small — increase CONFIG_DOWNLOADER_MAX_FILENAME_SIZE");
+        g_fota_active = false;
+        cJSON_Delete(doc);
+        return -ENOMEM;
     }
 
     LOG_DBG("FOTA host: %s", g_host_buf);
-    LOG_DBG("FOTA file: %.80s...", file_arg);
+    LOG_DBG("FOTA file: %.80s...", g_file_buf);
 
-    int ret = fota_download_start(g_host_buf, file_arg,
+    int ret = fota_download_start(g_host_buf, g_file_buf,
                                   CONFIG_CONEXIO_CLOUD_CA_TAG,
                                   0,  /* pdn_id: 0 = default PDN            */
                                   0); /* fragment_size: 0 = modem default    */
