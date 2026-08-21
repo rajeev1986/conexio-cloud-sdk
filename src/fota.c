@@ -214,6 +214,12 @@ static void fota_download_handler(const struct fota_download_evt *evt)
         LOG_INF("FOTA download complete — requesting reboot");
         /* Report 'installing' — binary is written to flash, MCUboot swap pending */
         job_status_publish("IN_PROGRESS", "installing", NULL, -1);
+        /* Persist job ID to NVS NOW, while we still have g_current_job_id in RAM.
+         * After the reboot into new firmware RAM is cleared — fota_confirm() on the
+         * new firmware reads this NVS record and publishes SUCCEEDED on MQTT connect. */
+        if (g_device_id[0] && g_current_job_id[0]) {
+            fota_pending_save(g_device_id, g_current_job_id);
+        }
         app_evt.type = FOTA_EVT_COMPLETE;
         g_cb(&app_evt);
 
@@ -500,16 +506,12 @@ void fota_confirm(void)
 {
     int ret = boot_write_img_confirmed();
     if (ret) {
-        LOG_ERR("boot_write_img_confirmed failed (%d) — "
-                "device will revert to previous firmware on next reboot", ret);
+        LOG_WRN("boot_write_img_confirmed failed (%d)", ret);
     } else {
-        LOG_INF("Firmware update confirmed — MCUboot will not revert");
-        /* Persist job ID to NVS so SUCCEEDED can be published after MQTT reconnects.
-         * We cannot publish now — MQTT is not connected immediately after reboot.
-         * fota_check_and_execute() will pick this up on the first CONNACK. */
-        if (g_device_id[0] && g_current_job_id[0]) {
-            fota_pending_save(g_device_id, g_current_job_id);
-        }
+        LOG_INF("Firmware image confirmed (MCUboot rollback prevention)");
+        /* g_current_job_id is empty here (new firmware, RAM cleared after reboot).
+         * The job ID was persisted to NVS in FOTA_DOWNLOAD_EVT_FINISHED on the old
+         * firmware. fota_check_and_execute() will publish SUCCEEDED when MQTT connects. */
         struct fota_event evt = { .type = FOTA_EVT_CONFIRMED };
         if (g_cb) g_cb(&evt);
     }
