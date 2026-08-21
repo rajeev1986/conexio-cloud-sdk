@@ -115,12 +115,11 @@ static void fota_download_handler(const struct fota_download_evt *evt)
         app_evt.data.progress_pct = evt->progress;
         g_cb(&app_evt);
         LOG_INF("FOTA download: %d%%", evt->progress);
-        /* Throttle IoT Jobs status updates — only publish at 0%, 25%, 50%, 75%, 100%
-         * to avoid flooding the MQTT broker with per-chunk updates. */
-        if (evt->progress == 0  || evt->progress == 25 ||
-            evt->progress == 50 || evt->progress == 75 || evt->progress == 100) {
-            job_status_publish("IN_PROGRESS", "downloading", NULL, evt->progress);
-        }
+        /* Do NOT publish IoT Job status on progress events — the modem
+         * radio is occupied with the HTTPS download and any MQTT publish
+         * attempt will compete for the socket, causing broker disconnects.
+         * Status is reported at start (IN_PROGRESS), completion (installing),
+         * and post-reboot confirmation (SUCCEEDED/FAILED) only. */
         break;
 
     case FOTA_DOWNLOAD_EVT_FINISHED:
