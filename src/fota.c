@@ -203,27 +203,6 @@ static void fota_download_handler(const struct fota_download_evt *evt)
         app_evt.type              = FOTA_EVT_PROGRESS;
         app_evt.data.progress_pct = evt->progress;
         g_cb(&app_evt);
-        /* Progress bar: overwrite same line using \r (no newline).
-         * 20-char bar: filled with '#', empty with '.'.
-         * Only print when percentage changes to reduce serial noise. */
-        {
-            static int last_pct = -1;
-            int pct = evt->progress;
-            if (pct != last_pct) {
-                last_pct = pct;
-                int filled = pct / 5;   /* 0-20 blocks */
-                /* \r returns cursor to line start; no \n so it overwrites */
-                printk("\r\033[KFOTA [");
-                for (int i = 0; i < 20; i++) {
-                    printk(i < filled ? "#" : ".");
-                }
-                printk("] %3d%%", pct);
-                if (pct >= 100) {
-                    printk("\n");   /* final newline at 100% */
-                    last_pct = -1; /* reset for next FOTA */
-                }
-            }
-        }
         /* Do NOT publish IoT Job status on progress events — the modem
          * radio is occupied with the HTTPS download and any MQTT publish
          * attempt will compete for the socket, causing broker disconnects.
