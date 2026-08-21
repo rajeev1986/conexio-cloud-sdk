@@ -191,7 +191,9 @@ static int execute_job(const char *job_id, const char *job_document)
         }
         memcpy(g_host_buf, host_start, host_len);
         g_host_buf[host_len] = '\0';
-        file_arg = path_start; /* includes leading '/' */
+        /* Strip leading '/' — downloader joins host+file with its own '/'
+         * via snprintf("%s/%s", host, file), so a leading slash gives "//". */
+        file_arg = path_start + 1;
     } else {
         /* No path — use full URL as host, empty file */
         strncpy(g_host_buf, url, sizeof(g_host_buf) - 1);
