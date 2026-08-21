@@ -67,7 +67,7 @@ static struct sockaddr_storage broker_addr;
 
 static uint8_t rx_buf[1024];
 static uint8_t tx_buf[1024];
-static uint8_t payload_buf[2048];
+static uint8_t payload_buf[4096]; /* increased from 2048 — FOTA presigned URLs exceed 2KB */
 
 static bool connected = false;
 

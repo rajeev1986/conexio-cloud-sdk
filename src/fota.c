@@ -155,17 +155,54 @@ static int execute_job(const char *job_id, const char *job_document)
     struct fota_event start_evt = { .type = FOTA_EVT_STARTED };
     if (g_cb) g_cb(&start_evt);
 
-    /* Start the download — fota_download_handler() receives progress events.
+    /* Split the presigned URL into host and file (path + query string).
+     *
+     * fota_download_start() requires host and file as separate arguments.
+     * Passing the full URL as host with file=NULL gives -EINVAL.
+     *
+     * URL format: https://<host>/<path>?<query>
+     * We locate the third '/' (after "https://") and split there.
      *
      * NCS v3.2.1 fota_download_start() signature:
      *   int fota_download_start(const char *host, const char *file,
      *                           int sec_tag, uint8_t pdn_id,
      *                           size_t fragment_size);
      *
-     * The 5th argument is fragment_size (bytes), NOT a timeout.
-     * Pass 0 to use the modem's default fragment size.
-     * Timeout is configured separately via CONFIG_FOTA_DOWNLOAD_TIMEOUT_MS. */
-    int ret = fota_download_start(url, NULL,
+     * Pointers must remain valid until download is finished — we use
+     * a static buffer for the host and point file into the original url.
+     */
+    static char g_host_buf[128];
+    const char *host_start = url;
+    /* Skip scheme: "https://" or "http://" */
+    const char *after_scheme = strstr(url, "://");
+    if (after_scheme) {
+        after_scheme += 3; /* skip "://" */
+    } else {
+        after_scheme = url;
+    }
+    /* Find the first '/' after the host */
+    const char *path_start = strchr(after_scheme, '/');
+    const char *file_arg;
+    if (path_start) {
+        /* Copy scheme + host into buffer */
+        size_t host_len = (size_t)(path_start - host_start);
+        if (host_len >= sizeof(g_host_buf)) {
+            host_len = sizeof(g_host_buf) - 1;
+        }
+        memcpy(g_host_buf, host_start, host_len);
+        g_host_buf[host_len] = '\0';
+        file_arg = path_start; /* includes leading '/' */
+    } else {
+        /* No path — use full URL as host, empty file */
+        strncpy(g_host_buf, url, sizeof(g_host_buf) - 1);
+        g_host_buf[sizeof(g_host_buf) - 1] = '\0';
+        file_arg = "/";
+    }
+
+    LOG_DBG("FOTA host: %s", g_host_buf);
+    LOG_DBG("FOTA file: %.80s...", file_arg);
+
+    int ret = fota_download_start(g_host_buf, file_arg,
                                   CONFIG_CONEXIO_CLOUD_CA_TAG,
                                   0,  /* pdn_id: 0 = default PDN            */
                                   0); /* fragment_size: 0 = modem default    */
