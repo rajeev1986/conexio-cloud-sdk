@@ -472,8 +472,24 @@ int fota_check_and_execute(void)
             const char *payload = "{\"status\":\"SUCCEEDED\"}";
             int ret = transport_publish_raw(topic, payload, strlen(payload));
             if (ret == 0) {
+                /* QoS 1 sent — schedule NVS clear after a short delay to allow
+                 * the broker to process the PUBACK. We use a work item so the
+                 * clear happens on the next k_sleep cycle, after the MQTT stack
+                 * has had a chance to exchange the PUBACK.
+                 * If MQTT drops before the PUBACK arrives, the NVS record is
+                 * still intact and we will retry on the next CONNACK. */
                 LOG_INF("FOTA: SUCCEEDED published — dashboard will update to Completed");
-                fota_pending_clear();
+                /* Give the MQTT stack 3s to exchange PUBACK before clearing NVS.
+                 * fota_check_and_execute is called from the SDK background thread
+                 * so k_sleep here is safe. */
+                k_sleep(K_SECONDS(3));
+                /* If still connected after 3s the PUBACK likely arrived — clear. */
+                if (transport_is_connected()) {
+                    fota_pending_clear();
+                    LOG_INF("FOTA: NVS pending record cleared");
+                } else {
+                    LOG_WRN("FOTA: MQTT dropped before PUBACK — will retry SUCCEEDED on next connect");
+                }
             } else {
                 /* Will retry on next CONNACK */
                 LOG_WRN("FOTA: SUCCEEDED publish failed (%d) — will retry", ret);
