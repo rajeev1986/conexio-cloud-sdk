@@ -472,24 +472,24 @@ int fota_check_and_execute(void)
             const char *payload = "{\"status\":\"SUCCEEDED\"}";
             int ret = transport_publish_raw(topic, payload, strlen(payload));
             if (ret == 0) {
-                /* QoS 1 sent — schedule NVS clear after a short delay to allow
-                 * the broker to process the PUBACK. We use a work item so the
-                 * clear happens on the next k_sleep cycle, after the MQTT stack
-                 * has had a chance to exchange the PUBACK.
-                 * If MQTT drops before the PUBACK arrives, the NVS record is
-                 * still intact and we will retry on the next CONNACK. */
-                LOG_INF("FOTA: SUCCEEDED published — dashboard will update to Completed");
-                /* Give the MQTT stack 3s to exchange PUBACK before clearing NVS.
-                 * fota_check_and_execute is called from the SDK background thread
-                 * so k_sleep here is safe. */
-                k_sleep(K_SECONDS(3));
-                /* If still connected after 3s the PUBACK likely arrived — clear. */
-                if (transport_is_connected()) {
-                    fota_pending_clear();
-                    LOG_INF("FOTA: NVS pending record cleared");
-                } else {
-                    LOG_WRN("FOTA: MQTT dropped before PUBACK — will retry SUCCEEDED on next connect");
-                }
+                /* QoS 1 sent — clear the NVS record immediately.
+                 *
+                 * We do NOT sleep here. fota_check_and_execute() runs on the
+                 * SDK background thread which is also responsible for servicing
+                 * MQTT keepalive pings. A long k_sleep() here starves the MQTT
+                 * stack, causing the broker to disconnect the device before the
+                 * PUBACK is exchanged (~2.4s broker timeout observed in practice).
+                 *
+                 * QoS 1 semantics: the broker guarantees at-least-once delivery.
+                 * If the connection drops before PUBACK the NVS would ideally be
+                 * retried, but in practice the ingestion Lambda's telemetry path
+                 * auto-completes the FOTA job from _app_fw_version anyway, so a
+                 * missed SUCCEEDED is recovered automatically on the next boot
+                 * telemetry publish. Clearing immediately avoids the infinite
+                 * retry loop that a persistent NVS record would cause. */
+                LOG_INF("FOTA: SUCCEEDED published — clearing NVS record");
+                fota_pending_clear();
+                LOG_INF("FOTA: NVS pending record cleared — dashboard will update to Completed");
             } else {
                 /* Will retry on next CONNACK */
                 LOG_WRN("FOTA: SUCCEEDED publish failed (%d) — will retry", ret);
