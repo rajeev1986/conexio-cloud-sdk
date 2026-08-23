@@ -347,6 +347,9 @@ config CONEXIO_CLOUD_OFFLINE_REPLAY_BATCH
 
 config CONEXIO_CLOUD_PSM
 	bool "Enable LTE Power Saving Mode (PSM) support"
+	select LTE_LC_PSM_MODULE
+	select LTE_LC_EDRX_MODULE
+	select LTE_LC_MODEM_SLEEP_MODULE
 	help
 	  Negotiates PSM or eDRX with the LTE network to minimise current draw
 	  between telemetry transmissions. Typical improvement: 5–20x battery
