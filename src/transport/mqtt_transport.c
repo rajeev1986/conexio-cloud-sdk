@@ -166,6 +166,12 @@ static void publish_config_ack(const char *config_id, bool success)
     cJSON_free(json);
 }
 
+/* Public wrapper — called from conexio_cloud.c after all settings processed */
+void transport_config_ack(const char *config_id, bool success)
+{
+    publish_config_ack(config_id, success);
+}
+
 /* ── MQTT event handler ───────────────────────────────────────────────────
  *
  * The Zephyr MQTT stack calls this from the application thread whenever
@@ -311,14 +317,13 @@ static void mqtt_evt_handler(struct mqtt_client *c, const struct mqtt_evt *evt)
             }
         }
 
-        /* Step 2: Send dashboard ACK */
-        if (type) {
-            if (strcmp(type, "command") == 0) {
-                publish_command_ack(command_id, sk, "executed");
-            } else if (strcmp(type, "config") == 0) {
-                publish_config_ack(config_id, true);
-            }
+        /* Step 2: Send dashboard ACK for commands only.
+         * Config ACK is sent AFTER dispatch (in transport_on_message) so
+         * it reflects the real result from the setting handlers. */
+        if (type && strcmp(type, "command") == 0) {
+            publish_command_ack(command_id, sk, "executed");
         }
+        /* Config ACK is intentionally deferred — see transport_config_ack() */
 
         if (msg) cJSON_Delete(msg);
 

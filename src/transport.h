@@ -20,6 +20,12 @@ int  transport_publish_raw(const char *topic, const char *payload, size_t len);
 void transport_poll(k_timeout_t timeout);
 bool transport_is_connected(void);
 
+/** Send a config ACK after processing all settings in a push.
+ *  success=true  → all settings applied    → dashboard shows 'applied'
+ *  success=false → one or more rejected    → dashboard shows 'failed'
+ */
+void transport_config_ack(const char *config_id, bool success);
+
 void transport_on_connected(void);
 void transport_on_disconnected(void);
 void transport_on_message(const char *json_str, size_t len);

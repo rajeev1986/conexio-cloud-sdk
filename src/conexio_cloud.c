@@ -1051,7 +1051,10 @@ static void dispatch_command(const char *name, const char *payload_json)
  * intentional: a new config key pushed from the dashboard should not
  * crash a device running older firmware.
  */
-static void dispatch_setting(const char *key, const cJSON *value_item)
+/* dispatch_setting — dispatch a single key/value from a config push.
+ * Returns true if the setting was applied successfully (CONEXIO_SETTING_OK),
+ * false if it was rejected or had no registered handler. */
+static bool dispatch_setting(const char *key, const cJSON *value_item)
 {
     for (int i = 0; i < setting_count; i++) {
         if (strcmp(setting_registry[i].key, key) != 0) continue;
@@ -1125,13 +1128,14 @@ static void dispatch_setting(const char *key, const cJSON *value_item)
         } else {
             LOG_DBG("Setting '%s' applied successfully", key);
         }
-        return;
+        return (st == CONEXIO_SETTING_OK);
     }
 
     /* Key not in registry — safe to ignore; could be a newer config key
-     * from the dashboard that this firmware version doesn't support yet */
+     * from the dashboard that this firmware version doesn't support yet.
+     * Not counted as a failure — unknown keys are silently accepted. */
     LOG_DBG("Setting '%s' has no registered handler — ignoring", key);
-}
+    return true;
 
 /* ── Inbound message router ───────────────────────────────────────────────
  *
@@ -1370,20 +1374,40 @@ void transport_on_message(const char *json_str, size_t len)
     } else if (strcmp(type, "config") == 0) {
         /* Iterate each key in the config object and dispatch individually.
          * This means a push with 5 settings fires 5 separate handler calls,
-         * each with a typed value — no JSON parsing in application code. */
+         * each with a typed value — no JSON parsing in application code.
+         *
+         * We aggregate the results: if any registered handler rejects its
+         * value, success=false is sent in the config ACK so the dashboard
+         * shows 'failed' instead of 'applied'. Unknown keys (no handler)
+         * are treated as success so future dashboard keys don't break existing
+         * firmware. */
         const cJSON *config_obj   = cJSON_GetObjectItem(msg, "config");
         const cJSON *version_item = cJSON_GetObjectItem(msg, "version");
+        const char  *config_id    = cJSON_GetStringValue(cJSON_GetObjectItem(msg, "configId"));
         uint32_t version = cJSON_IsNumber(version_item)
             ? (uint32_t)version_item->valuedouble : 0;
 
         LOG_INF("OTA Config push received (v%u)", version);
 
+        bool all_ok = true;
         if (config_obj && cJSON_IsObject(config_obj)) {
             const cJSON *kv = NULL;
             cJSON_ArrayForEach(kv, config_obj) {
-                /* kv->string is the key name; kv is the value node */
-                dispatch_setting(kv->string, kv);
+                if (!dispatch_setting(kv->string, kv)) {
+                    all_ok = false;
+                }
             }
+        }
+
+        /* Send config ACK with the real result — AFTER all handlers ran.
+         * This replaces the early 'success: true' that was sent before
+         * dispatch in the transport layer. */
+        transport_config_ack(config_id, all_ok);
+        if (!all_ok) {
+            LOG_WRN("OTA Config v%u: one or more settings rejected — "
+                    "dashboard will show 'failed'", version);
+        } else {
+            LOG_INF("OTA Config v%u applied — dashboard will show 'applied'", version);
         }
 
     } else {
