@@ -12,6 +12,12 @@
  *   The nPM1300 PMIC (npm1300@6b) and its pmic_charger node are defined
  *   in conexio_stratus_pro_common.dtsi. Only the i2c2 pin pull-up needs
  *   to be enabled here to reliably communicate with the PMIC over I2C.
+ *
+ * UART0 — low-power configuration:
+ *   When building with low_power.conf (CONFIG_SERIAL=n / CONFIG_LOG=n),
+ *   the UART RX pin is deleted to prevent current leakage through a
+ *   floating or undriven RX line. TX is kept so the UART peripheral
+ *   can still be held in a defined state by the hardware.
  */
 
 /* Enable I2C pull-ups for nPM1300 PMIC communication */
@@ -19,4 +25,11 @@
 	group1 {
 		bias-pull-up;
 	};
+};
+
+/* UART0 — delete RX pin to avoid floating-pin leakage in low-power builds */
+&uart0 {
+	status = "okay";
+	current-speed = <115200>;
+	/delete-property/ rx-pin;
 };
