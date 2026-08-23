@@ -156,7 +156,7 @@ static uint32_t g_publish_fail_count    = 0;
  * g_last_soc_pct:    SOC% at the previous publish (-1 = not yet read).
  * g_last_pub_time_ms: k_uptime_get() at the previous publish.
  * We track these between publishes to compute instantaneous drain rate. */
-static int32_t  g_last_soc_pct      = -1;
+static float    g_last_soc_pct      = -1.0f;  /* float — preserves sub-percent precision */
 static int64_t  g_last_pub_time_ms  =  0;
 static double   g_last_battery_mv   = NAN; /* voltage from most recent fuel gauge read */
 
@@ -1857,10 +1857,10 @@ skip_modem_metrics:;  /* jump target if modem_info_params_get fails */
             cJSON_AddNumberToObject(metrics, "_battery_soc_pct", (double)soc);
 
             int64_t now_ms = k_uptime_get();
-            if (!is_charging && g_last_soc_pct >= 0 && g_last_pub_time_ms > 0) {
+            if (!is_charging && g_last_soc_pct >= 0.0f && g_last_pub_time_ms > 0) {
                 float elapsed_hr = (float)(now_ms - g_last_pub_time_ms) / 3600000.0f;
                 if (elapsed_hr > 0.0f) {
-                    float drain = ((float)g_last_soc_pct - soc) / elapsed_hr;
+                    float drain = (g_last_soc_pct - soc) / elapsed_hr;
                     /* Only emit when actually draining (positive drain rate).
                      * Negative values mean SOC went up — charger was removed
                      * and reconnected mid-interval, not a meaningful reading. */
@@ -1871,7 +1871,7 @@ skip_modem_metrics:;  /* jump target if modem_info_params_get fails */
                 }
             }
             /* Update tracking state for next publish */
-            g_last_soc_pct     = (int32_t)soc;
+            g_last_soc_pct     = soc;        /* float — preserves sub-percent precision */
             g_last_pub_time_ms = now_ms;
         }
     }
