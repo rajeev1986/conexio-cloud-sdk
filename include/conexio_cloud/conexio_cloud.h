@@ -364,6 +364,20 @@ const char *conexio_cloud_device_id(void);
 /** Returns the SDK semantic version string, e.g. "2.1.0". */
 const char *conexio_cloud_version(void);
 
+#if defined(CONFIG_CONEXIO_CLOUD_BATTERY_METRICS)
+/**
+ * @brief Returns the battery voltage (mV) cached by the last nPM1300 fuel gauge read.
+ *
+ * The SDK reads V/I/T from the nPM1300 once per publish cycle inside
+ * battery_read_soc(). This function returns the voltage from that read
+ * so sensor callbacks (e.g. read_battery_mv in main.c) can reuse it
+ * without triggering a second sensor_sample_fetch on the same cycle.
+ *
+ * Returns NAN if no fuel gauge read has occurred yet (first publish cycle).
+ */
+double conexio_cloud_get_last_battery_mv(void);
+#endif
+
 /**
  * @brief Compile-time SDK version string.
  *

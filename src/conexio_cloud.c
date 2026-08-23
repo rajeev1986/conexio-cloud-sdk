@@ -160,6 +160,13 @@ static int32_t  g_last_soc_pct      = -1;
 static int64_t  g_last_pub_time_ms  =  0;
 static double   g_last_battery_mv   = NAN; /* voltage from most recent fuel gauge read */
 
+#if defined(CONFIG_CONEXIO_CLOUD_BATTERY_METRICS)
+/** Returns the battery voltage (mV) cached by the last fuel gauge read.
+ *  Returns NAN if no fuel gauge read has occurred yet this session.
+ *  Used by read_battery_mv() in main.c to avoid a second sensor_sample_fetch. */
+double conexio_cloud_get_last_battery_mv(void) { return g_last_battery_mv; }
+#endif
+
 /* Device handle — obtained lazily on first use. */
 static const struct device *g_pmic_charger_dev;
 
