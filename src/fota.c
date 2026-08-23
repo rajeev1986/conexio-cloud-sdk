@@ -84,7 +84,11 @@ static int fota_nvs_init(void)
                                          g_fota_nvs.offset, &info);
     if (rc) return rc;
     g_fota_nvs.sector_size  = info.size;
-    g_fota_nvs.sector_count = 2U;
+    /* Must match offline_buffer.c (NVS_SECTOR_COUNT = 4).
+     * Both modules mount the same storage_partition — using different
+     * sector_count values causes NVS header mismatches and potential
+     * cross-module data corruption. */
+    g_fota_nvs.sector_count = 4U;
     rc = nvs_mount(&g_fota_nvs);
     if (rc) return rc;
     g_fota_nvs_ready = true;
