@@ -92,6 +92,12 @@
 #include <stdio.h>
 #include <inttypes.h>                 /* PRId64 for schedule watchdog logs  */
 #include <limits.h>                   /* INT_MAX for g_interval_max_sec default */
+/* timegm() is a POSIX extension — enable it before including time.h.
+ * Must come before any system header that includes <time.h>. */
+#ifndef _POSIX_C_SOURCE
+#  define _POSIX_C_SOURCE 200809L
+#endif
+#include <time.h>                     /* timegm() — UTC struct tm → epoch  */
 #include <cJSON.h>
 #include <cJSON_os.h>
 #include <modem/nrf_modem_lib.h>
@@ -1136,6 +1142,7 @@ static bool dispatch_setting(const char *key, const cJSON *value_item)
      * Not counted as a failure — unknown keys are silently accepted. */
     LOG_DBG("Setting '%s' has no registered handler — ignoring", key);
     return true;
+}
 
 /* ── Inbound message router ───────────────────────────────────────────────
  *
