@@ -361,6 +361,70 @@ bool conexio_cloud_is_connected(void);
 /** Returns the device ID (bare 15-digit IMEI, e.g. "351358815179730"). Available after conexio_cloud_init(). */
 const char *conexio_cloud_device_id(void);
 
+/** Returns the SDK semantic version string, e.g. "2.1.0". */
+const char *conexio_cloud_version(void);
+
+/**
+ * @brief Compile-time SDK version string.
+ *
+ * Available before conexio_cloud_init() — use this for early log lines
+ * such as the boot banner. Identical to conexio_cloud_version() at runtime.
+ *
+ * Example:
+ * @code
+ * LOG_INF("App v%s | Conexio SDK v" CONEXIO_CLOUD_VERSION, APP_VERSION_STRING);
+ * @endcode
+ */
+#define CONEXIO_CLOUD_VERSION "2.1.0"
+
+/* ── SDK status ──────────────────────────────────────────────────────────── */
+
+/**
+ * @brief Conexio Cloud SDK connection status.
+ *
+ * Returned by conexio_cloud_get_status().
+ */
+enum conexio_cloud_status {
+    /** SDK not yet initialised. */
+    CONEXIO_CLOUD_STATUS_INIT,
+    /** LTE registered; MQTT connection in progress. */
+    CONEXIO_CLOUD_STATUS_CONNECTING,
+    /** MQTT connected; telemetry can be sent. */
+    CONEXIO_CLOUD_STATUS_CONNECTED,
+    /** Connection lost; SDK is retrying. */
+    CONEXIO_CLOUD_STATUS_OFFLINE,
+};
+
+/**
+ * @brief Returns the current SDK connection status.
+ *
+ * More granular than conexio_cloud_is_connected() — useful for status LEDs,
+ * displays, or conditional logic that needs to distinguish "not yet started"
+ * from "lost connection".
+ *
+ * @return Current status enum value.
+ */
+enum conexio_cloud_status conexio_cloud_get_status(void);
+
+/**
+ * @brief Block until the SDK is connected to the cloud (MQTT CONNACK received).
+ *
+ * Eliminates the boilerplate semaphore pattern from main.c:
+ * @code
+ * // Before (boilerplate in every app):
+ * static K_SEM_DEFINE(connected_sem, 0, 1);
+ * // ... give semaphore in CONNECTED event handler ...
+ * k_sem_take(&connected_sem, K_SECONDS(60));
+ *
+ * // After (one line):
+ * conexio_cloud_wait_connected(60000);
+ * @endcode
+ *
+ * @param timeout_ms  Maximum milliseconds to wait. Use K_FOREVER for no timeout.
+ * @return 0 when connected, -ETIMEDOUT if timeout elapsed before connection.
+ */
+int conexio_cloud_wait_connected(int32_t timeout_ms);
+
 /**
  * @brief Returns the current telemetry publish interval in seconds.
  *
@@ -393,9 +457,6 @@ int conexio_cloud_get_interval_sec(void);
  * @param max_sec   Maximum accepted interval in seconds (>= min_sec).
  */
 void conexio_cloud_register_interval(int min_sec, int max_sec);
-
-/** Returns the SDK semantic version string, e.g. "2.1.0". */
-const char *conexio_cloud_version(void);
 
 /**
  * @brief Override the default FOTA event callback.

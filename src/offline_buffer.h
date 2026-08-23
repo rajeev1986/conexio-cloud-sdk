@@ -77,4 +77,34 @@ int offline_buffer_count(void);
  */
 void offline_buffer_clear(void);
 
+/**
+ * @brief Callback type invoked when the buffer is full and drops an entry.
+ *
+ * Only available when CONFIG_CONEXIO_CLOUD_OFFLINE_BUFFER_FULL_CB=y.
+ *
+ * @param dropped_count  Total number of entries dropped so far this session.
+ * @param capacity       Maximum buffer capacity (CONFIG_CONEXIO_CLOUD_OFFLINE_BUFFER_SIZE).
+ */
+typedef void (*offline_buffer_full_cb_t)(uint32_t dropped_count, uint32_t capacity);
+
+/**
+ * @brief Register a callback to be called when the buffer is full.
+ *
+ * Only available when CONFIG_CONEXIO_CLOUD_OFFLINE_BUFFER_FULL_CB=y.
+ * Call before offline_buffer_init(). Pass NULL to unregister.
+ *
+ * Example:
+ * @code
+ * static void on_buffer_full(uint32_t dropped, uint32_t cap)
+ * {
+ *     LOG_WRN("Offline buffer full — %u entries dropped (cap %u)", dropped, cap);
+ *     // Optional: light an LED, stop sampling, etc.
+ * }
+ * conexio_cloud_register_offline_buffer_full_cb(on_buffer_full);
+ * @endcode
+ */
+#if defined(CONFIG_CONEXIO_CLOUD_OFFLINE_BUFFER_FULL_CB)
+void conexio_cloud_register_offline_buffer_full_cb(offline_buffer_full_cb_t cb);
+#endif
+
 #endif /* OFFLINE_BUFFER_H */

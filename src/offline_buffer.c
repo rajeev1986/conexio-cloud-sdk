@@ -57,6 +57,16 @@ static uint16_t g_write_idx = 0;
 static uint16_t g_read_idx  = 0;
 static uint16_t g_count     = 0;
 
+#if defined(CONFIG_CONEXIO_CLOUD_OFFLINE_BUFFER_FULL_CB)
+static offline_buffer_full_cb_t g_full_cb    = NULL;
+static uint32_t                 g_drop_count = 0;
+
+void conexio_cloud_register_offline_buffer_full_cb(offline_buffer_full_cb_t cb)
+{
+    g_full_cb = cb;
+}
+#endif
+
 /* ── NVS helpers ──────────────────────────────────────────────────────────── */
 
 static int nvs_read_u16(uint16_t key, uint16_t *val)
@@ -136,6 +146,12 @@ int offline_buffer_push(const char *payload, size_t len)
         g_read_idx = (g_read_idx + 1) % BUFFER_SIZE;
         nvs_write_u16(KEY_READ_IDX, g_read_idx);
         LOG_DBG("Buffer full — oldest entry dropped");
+#if defined(CONFIG_CONEXIO_CLOUD_OFFLINE_BUFFER_FULL_CB)
+        g_drop_count++;
+        if (g_full_cb) {
+            g_full_cb(g_drop_count, (uint32_t)BUFFER_SIZE);
+        }
+#endif
     } else {
         g_count++;
         nvs_write_u16(KEY_COUNT, g_count);

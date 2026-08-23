@@ -130,6 +130,8 @@ config CONEXIO_CLOUD_STATIC_DEVICE_ID
 
 # ── Telemetry ─────────────────────────────────────────────────────────────────
 
+menu "Telemetry"
+
 config CONEXIO_CLOUD_INTERVAL_SEC
 	int "Telemetry publish interval (seconds)"
 	default 3600
@@ -145,6 +147,16 @@ config CONEXIO_CLOUD_METRIC_QUEUE_SIZE
 	int "Maximum metrics buffered per publish"
 	default 16
 	range 4 64
+
+config CONEXIO_CLOUD_METRIC_OVERFLOW_LOG
+	bool "Log a warning when the metric queue is full"
+	default y
+	help
+	  When enabled (default), the SDK logs a WRN message if
+	  conexio_cloud_send_metric() is called while the queue is full.
+	  This helps developers catch queue-full conditions during development
+	  without having to check return values on every send_metric call.
+	  Disable in production to suppress the warning if overflow is expected.
 
 config CONEXIO_CLOUD_MAX_COMMANDS
 	int "Maximum number of registered command handlers"
@@ -213,7 +225,11 @@ config CONEXIO_CLOUD_SLOW_METRIC_INTERVAL
 	  At a 60s telemetry interval this is approximately every 10 minutes.
 	  Set to 2 for faster location tracking at the cost of more data.
 
+endmenu # Telemetry
+
 # ── NTP sync timeout ──────────────────────────────────────────────────────────
+
+menu "Connection"
 
 config CONEXIO_CLOUD_NTP_TIMEOUT_SEC
 	int "NTP sync timeout (seconds)"
@@ -274,7 +290,11 @@ config CONEXIO_CLOUD_THREAD_STACK_SIZE
 	default 4096
 	range 2048 16384
 
+endmenu # Connection
+
 # ── FOTA — Firmware Over-the-Air updates ─────────────────────────────────────
+
+menu "FOTA (Firmware Over-the-Air)"
 
 config CONEXIO_CLOUD_FOTA
 	bool "Enable FOTA (Firmware Over-the-Air) support"
@@ -309,7 +329,11 @@ config CONEXIO_CLOUD_FOTA_DOWNLOAD_TIMEOUT_SEC
 	  600s (10 min) is the maximum — beyond this a stuck download drains the
 	  battery without benefit. Typical download time is under 2 minutes on NB-IoT.
 
+endmenu # FOTA
+
 # ── Offline buffer — flash-backed telemetry buffering ────────────────────────
+
+menu "Offline Buffer"
 
 config CONEXIO_CLOUD_OFFLINE_BUFFER
 	bool "Enable offline telemetry buffer"
@@ -343,7 +367,22 @@ config CONEXIO_CLOUD_OFFLINE_REPLAY_BATCH
 	  How many buffered payloads to send after each reconnect before
 	  switching back to live telemetry. Prevents replay storms.
 
+config CONEXIO_CLOUD_OFFLINE_BUFFER_FULL_CB
+	bool "Enable buffer-full notification callback"
+	default n
+	depends on CONEXIO_CLOUD_OFFLINE_BUFFER
+	help
+	  When enabled, the SDK calls a user-registered callback whenever the
+	  offline buffer is full and an oldest entry is being dropped.
+	  Useful for status LEDs, logging, or stopping data collection when
+	  storage is exhausted.
+	  Register with: conexio_cloud_register_offline_buffer_full_cb(cb).
+
+endmenu # Offline Buffer
+
 # ── Power manager — LTE PSM / eDRX ───────────────────────────────────────────
+
+menu "Power Management (PSM / eDRX)"
 
 config CONEXIO_CLOUD_PSM
 	bool "Enable LTE Power Saving Mode (PSM) support"
@@ -387,7 +426,11 @@ config CONEXIO_CLOUD_EDRX
 	  eDRX provides faster command reception latency at the cost of higher
 	  idle current. Do not enable both PSM and eDRX simultaneously.
 
+endmenu # Power Management
+
 # ── Retry / watchdog — exponential backoff + hardware watchdog ───────────────
+
+menu "Retry and Watchdog"
 
 config CONEXIO_CLOUD_RETRY
 	bool "Enable exponential backoff retry and hardware watchdog"
@@ -437,5 +480,7 @@ config CONEXIO_CLOUD_WATCHDOG_TIMEOUT_SEC
 	  has not been called within this window. Call it from your main loop.
 	  Must be greater than RETRY_MAX_SEC × RETRY_MAX_ATTEMPTS to avoid
 	  a spurious reboot during a normal backoff sequence.
+
+endmenu # Retry and Watchdog
 
 endif # CONEXIO_CLOUD

@@ -137,6 +137,20 @@
 
 LOG_MODULE_REGISTER(conexio_cloud, LOG_LEVEL_INF);
 
+/* ── SDK connection status ────────────────────────────────────────────────── */
+static enum conexio_cloud_status g_sdk_status = CONEXIO_CLOUD_STATUS_INIT;
+static K_SEM_DEFINE(g_connected_sem, 0, 1);  /* given on MQTT CONNACK */
+
+enum conexio_cloud_status conexio_cloud_get_status(void) { return g_sdk_status; }
+
+int conexio_cloud_wait_connected(int32_t timeout_ms)
+{
+    if (g_sdk_status == CONEXIO_CLOUD_STATUS_CONNECTED) return 0;
+    k_timeout_t t = (timeout_ms < 0) ? K_FOREVER : K_MSEC(timeout_ms);
+    int ret = k_sem_take(&g_connected_sem, t);
+    return (ret == 0) ? 0 : -ETIMEDOUT;
+}
+
 /* ── Command registry ─────────────────────────────────────────────────────
  *
  * Application code calls conexio_cloud_register_command("NAME", handler, arg)
@@ -1304,12 +1318,15 @@ void transport_on_message(const char *json_str, size_t len)
 
 void transport_on_connected(void)
 {
+    g_sdk_status = CONEXIO_CLOUD_STATUS_CONNECTED;
+    k_sem_give(&g_connected_sem);  /* unblock conexio_cloud_wait_connected() */
     struct conexio_cloud_event evt = { .type = CONEXIO_CLOUD_EVT_CONNECTED };
     sdk_internal_event_handler(&evt);
 }
 
 void transport_on_disconnected(void)
 {
+    g_sdk_status = CONEXIO_CLOUD_STATUS_OFFLINE;
     struct conexio_cloud_event evt = { .type = CONEXIO_CLOUD_EVT_DISCONNECTED };
     sdk_internal_event_handler(&evt);
 }
@@ -2220,6 +2237,7 @@ int conexio_cloud_init(conexio_cloud_event_cb_t cb)
 #endif
 
     /* ── Step 12: Spawn background thread ──────────────────────────── */
+    g_sdk_status = CONEXIO_CLOUD_STATUS_CONNECTING;
     k_thread_create(&cloud_thread_data, cloud_stack,
                     K_THREAD_STACK_SIZEOF(cloud_stack),
                     cloud_thread_fn,
@@ -2268,7 +2286,11 @@ int conexio_cloud_send_metric(const char *name, double value)
     }
     if (slot == -1) {
         k_mutex_unlock(&queue_mutex);
-        LOG_ERR("Metric queue full — increase CONFIG_CONEXIO_CLOUD_METRIC_QUEUE_SIZE");
+#if defined(CONFIG_CONEXIO_CLOUD_METRIC_OVERFLOW_LOG)
+        LOG_WRN("Metric queue full (size=%d) — '%s' dropped. "
+                "Increase CONFIG_CONEXIO_CLOUD_METRIC_QUEUE_SIZE.",
+                CONFIG_CONEXIO_CLOUD_METRIC_QUEUE_SIZE, name);
+#endif
         return -ENOMEM;
     }
     strncpy(metric_queue[slot].name, name, MAX_METRIC_NAME - 1);

@@ -4,21 +4,22 @@
  * nRF Connect SDK v3.2.1 / nRF91xx
  *
  * ┌─────────────────────────────────────────────────────────────────────────┐
- * │  This is what an application built on conexio-cloud-sdk-v2 looks like. │
+ * │  This is what an application built on conexio-cloud-sdk looks like.    │
  * │                                                                         │
  * │  The application provides:                                              │
  * │    1. Sensor reading callbacks (registered — SDK calls them)            │
  * │    2. Actuator command handlers (FAN_ON, FAN_OFF)                       │
  * │    3. OTA Config settings handlers (alertThreshold, debugMode)          │
  * │    4. Optional cloud event handler (status LED etc.)                    │
- * │    5. main(): register → init → sleep loop                              │
+ * │    5. main(): register → init → wait_connected → sleep loop             │
  * │                                                                         │
  * │  The SDK provides everything else — no boilerplate needed:              │
  * │    REBOOT, SET_INTERVAL, FIRMWARE_UPDATE commands — built-in            │
  * │    telemetryIntervalSec setting — built-in                              │
  * │    Retry, WDT, PSM, offline buffer, FOTA — enabled via prj.conf        │
  * │    _rssi, _snr, _reboot_cnt, _battery_mv, _sdk_version — auto-metrics  │
- * │    conexio_cloud_register_interval(min, max) — Golioth-style          │
+ * │    _app_fw_version — auto-published from app VERSION file               │
+ * │    conexio_cloud_register_interval(min, max) — Golioth-style            │
  * └─────────────────────────────────────────────────────────────────────────┘
  */
 
@@ -33,7 +34,7 @@
 #include <zephyr/drivers/sensor.h>
 #include <zephyr/random/random.h>
 #include <zephyr/logging/log.h>
-#include <math.h>                  /* NAN — returned by read_battery_mv on failure */
+#include <math.h>    /* NAN — returned by read_battery_mv on failure */
 
 /* App firmware version from VERSION file — generated at build time */
 #if __has_include(<app_version.h>)
@@ -62,12 +63,12 @@ static bool g_debug_mode      = false;
 static const struct gpio_dt_spec g_led = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
 
 /* ── Telemetry interval limits ────────────────────────────────────────── */
-#define TELEMETRY_INTERVAL_MIN_S   10      /* Fastest: 10 s — debug / development  */
-#define TELEMETRY_INTERVAL_MAX_S   7200    /* Slowest: 7200 s (2 h) — battery mode */
+#define TELEMETRY_INTERVAL_MIN_S    10       /* Fastest: 10 s — debug / development   */
+#define TELEMETRY_INTERVAL_MAX_S    604800   /* Slowest: 7 days — ultra-low-power      */
 
 /* ── Alert threshold limits ───────────────────────────────────────────── */
-#define ALERT_THRESHOLD_MIN        0       /* 0 = disabled                          */
-#define ALERT_THRESHOLD_MAX        200     /* Covers full sensor range              */
+#define ALERT_THRESHOLD_MIN         0        /* 0 = disabled                           */
+#define ALERT_THRESHOLD_MAX         200      /* Covers full sensor range               */
 
 /* ── nPM1300 fuel gauge device handles ───────────────────────────────── */
 /*
@@ -79,9 +80,6 @@ static const struct device *pmic_charger = DEVICE_DT_GET(DT_NODELABEL(pmic_charg
 
 /* Flag set once fuel_gauge_init() has succeeded — guards read_battery_mv. */
 static bool g_fuel_gauge_ready = false;
-
-/* Semaphore given when MQTT connects — gates the immediate boot publish. */
-static K_SEM_DEFINE(cloud_connected_sem, 0, 1);
 
 /* ── Sensor callbacks ─────────────────────────────────────────────────── */
 /*
@@ -97,6 +95,23 @@ static K_SEM_DEFINE(cloud_connected_sem, 0, 1);
  *
  * Return NAN to skip a reading for a given cycle (sensor unavailable).
  */
+
+#if defined(CONFIG_CONEXIO_SAMPLE_SIMULATED_SENSORS)
+/*
+ * ⚠ SIMULATED SENSORS — for development and demonstration only.
+ *
+ * These callbacks return random values. They are compiled only when
+ * CONFIG_CONEXIO_SAMPLE_SIMULATED_SENSORS=y (default in prj.conf).
+ *
+ * To use real sensors:
+ *   1. Set CONFIG_CONEXIO_SAMPLE_SIMULATED_SENSORS=n in prj.conf
+ *   2. Replace these stubs with actual Zephyr sensor driver calls
+ *
+ * A build warning is emitted below as a reminder.
+ */
+#warning "Simulated sensor data is enabled (CONFIG_CONEXIO_SAMPLE_SIMULATED_SENSORS=y)." \
+         " Replace with real sensor reads before deploying to production."
+
 static double read_temperature(void *arg)
 {
     ARG_UNUSED(arg);
@@ -110,6 +125,32 @@ static double read_humidity(void *arg)
     /* Simulated: random value in [50.0, 80.0] % with 0.1 resolution */
     return 50.0 + (double)(sys_rand32_get() % 301) * 0.1;
 }
+
+#else
+/*
+ * Real sensor reads — implement these for your hardware.
+ * Returning NAN skips the metric for that publish cycle.
+ */
+static double read_temperature(void *arg)
+{
+    ARG_UNUSED(arg);
+    /* TODO: implement for your sensor hardware
+     * Example (BME280 / SHT31 / etc.):
+     *   struct sensor_value val;
+     *   sensor_sample_fetch(temp_dev);
+     *   sensor_channel_get(temp_dev, SENSOR_CHAN_AMBIENT_TEMP, &val);
+     *   return sensor_value_to_double(&val);
+     */
+    return (double)NAN;
+}
+
+static double read_humidity(void *arg)
+{
+    ARG_UNUSED(arg);
+    /* TODO: implement for your sensor hardware */
+    return (double)NAN;
+}
+#endif /* CONFIG_CONEXIO_SAMPLE_SIMULATED_SENSORS */
 
 /* ── Battery voltage from nPM1300 fuel gauge ──────────────────────────── */
 /*
@@ -189,10 +230,6 @@ static void on_fan_off(const char *payload_json, void *arg)
  * The Schedules executor publishes the command via MQTT to
  *   devices/{deviceId}/commands  (QoS 1)
  * and the SDK dispatches it here.
- *
- * Example schedule payload from the dashboard:
- *   command: LED_ON,  payload: {}
- *   command: LED_OFF, payload: {}
  */
 static void on_led_on(const char *payload_json, void *arg)
 {
@@ -224,15 +261,8 @@ static void on_led_off(const char *payload_json, void *arg)
 /*
  * Called by the SDK for three events:
  *   STARTED  — cloud delivered LED_ON; firmware watchdog timer is now armed.
- *              The LED_OFF will fire autonomously at stopAt even without
- *              cloud connectivity.
- *   STOPPED  — LED_OFF was fired by the firmware timer (device was offline
- *              when the cloud's end-command EventBridge rule fired).
- *   EXPIRED  — Device rebooted during the LED_ON window; LED_OFF ran
- *              immediately on boot because stopAt had already passed.
- *
- * This callback is optional — it is useful for logging, status LEDs, or
- * sending a telemetry event to confirm the schedule ran on the device side.
+ *   STOPPED  — LED_OFF was fired by the firmware timer (device was offline).
+ *   EXPIRED  — Device rebooted during LED_ON window; LED_OFF ran on boot.
  */
 static void on_schedule(const struct conexio_schedule_event *evt)
 {
@@ -242,16 +272,11 @@ static void on_schedule(const struct conexio_schedule_event *evt)
                 evt->stop_command);
         break;
     case CONEXIO_SCHEDULE_EVT_STOPPED:
-        LOG_INF("Schedule stopped autonomously — '%s' fired by firmware timer "
-                "(device was offline when cloud end-command fired)",
+        LOG_INF("Schedule stopped autonomously — '%s' fired by firmware timer",
                 evt->stop_command);
-        /* Optionally queue a metric so the cloud knows the device ran the
-         * schedule independently: */
-        /* conexio_cloud_send_metric("_sched_autonomous_stop", 1.0); */
         break;
     case CONEXIO_SCHEDULE_EVT_EXPIRED:
-        LOG_WRN("Schedule expired on boot — '%s' executed immediately "
-                "(device was off during schedule window)",
+        LOG_WRN("Schedule expired on boot — '%s' executed immediately",
                 evt->stop_command);
         break;
     default:
@@ -298,10 +323,8 @@ static void cloud_event_handler(const struct conexio_cloud_event *evt)
 {
     switch (evt->type) {
     case CONEXIO_CLOUD_EVT_CONNECTED:
-        LOG_INF("Connected — %s | SDK %s",
-                conexio_cloud_device_id(), conexio_cloud_version());
-        /* Unblock the boot publish in main() */
-        k_sem_give(&cloud_connected_sem);
+        LOG_INF("Connected — %s | App v%s | SDK v" CONEXIO_CLOUD_VERSION,
+                conexio_cloud_device_id(), APP_VERSION_STRING);
         /* TODO: status LED green */
         break;
     case CONEXIO_CLOUD_EVT_DISCONNECTED:
@@ -326,8 +349,7 @@ static void cloud_event_handler(const struct conexio_cloud_event *evt)
 int main(void)
 {
     LOG_INF("=== Conexio Advanced Sample ===");
-    LOG_INF("App firmware : v%s", APP_VERSION_STRING);
-    // LOG_INF("SDK version  : %s", conexio_cloud_version());
+    LOG_INF("App v%s | SDK v" CONEXIO_CLOUD_VERSION, APP_VERSION_STRING);
 
     /* ── LED GPIO init ────────────────────────────────────────────────
      * Configure the on-board LED as output, initially OFF.
@@ -351,7 +373,7 @@ int main(void)
     /* _battery_mv from nPM1300 fuel gauge — replaces modem AT%XVBAT.
      * Registered with the metric name "_battery_mv" so the SDK publishes
      * it under that exact key rather than double-publishing alongside the
-     * auto-battery metric (which is disabled via CONFIG_CONEXIO_CLOUD_AUTO_BATTERY=n). */
+     * auto-battery metric (disabled via CONFIG_CONEXIO_CLOUD_AUTO_BATTERY=n). */
     conexio_cloud_register_sensor("_battery_mv", read_battery_mv, NULL);
 
     /* ── Register application commands ───────────────────────────────
@@ -377,29 +399,22 @@ int main(void)
     conexio_cloud_register_setting_bool("debugMode", on_debug_mode, NULL);
 
     /* ── Register telemetry interval with limits ──────────────────────
-     * Golioth-style: declare the valid range once as named constants.
-     * The SDK validates any SET_INTERVAL command against these limits —
-     * no range check needed in application code.
-     *
-     * The optional callback is called ONLY when the new value is valid
-     * and has been applied. Use it for app-level reactions (e.g. update
-     * a display, persist to NVS, adjust a sensor duty cycle).
-     * Pass NULL as the callback if no reaction is needed.              */
+     * The SDK validates any SET_INTERVAL or telemetryIntervalSec OTA
+     * Config push against these limits — no range check in your code.
+     * Values must be within CONFIG_CONEXIO_CLOUD_INTERVAL_SEC range.  */
     conexio_cloud_register_interval(TELEMETRY_INTERVAL_MIN_S,
                                     TELEMETRY_INTERVAL_MAX_S);
 
     /* ── Register schedule lifecycle callback ─────────────────────────
      * Called when the firmware watchdog arms, fires, or runs on boot.
-     * Enables logging and optional telemetry for autonomous schedule runs.
-     * The SDK stores the stop command + stopAt in NVS so LED_OFF runs even
-     * if the device loses connectivity after receiving LED_ON.            */
+     * The SDK stores the stop command + stopAt in NVS so LED_OFF runs
+     * even if the device loses connectivity after receiving LED_ON.   */
     conexio_cloud_register_schedule_cb(on_schedule);
 
     /* ── nPM1300 fuel gauge init ──────────────────────────────────────────
-     * Initialises the nRF Fuel Gauge library with the battery model and
-     * the initial voltage/current/temperature readings from the nPM1300.
-     * Must happen before conexio_cloud_init() so read_battery_mv() is
-     * ready when the SDK background thread calls it on the first publish. */
+     * Initialises the nRF Fuel Gauge library with battery model and initial
+     * readings. Must happen before conexio_cloud_init() so read_battery_mv()
+     * is ready when the SDK background thread calls it on the first publish. */
     if (!device_is_ready(pmic_charger)) {
         LOG_ERR("pmic_charger device not ready — battery voltage unavailable");
     } else if (fuel_gauge_init(pmic_charger) < 0) {
@@ -410,22 +425,21 @@ int main(void)
     }
 
     /* ── Single SDK init — handles everything ─────────────────────────
-     * LTE connect → NTP sync → config fetch → cert provision →
-     * transport init → PSM init → FOTA init → thread spawn           */
+     * LTE → NTP → PSM decision → config fetch → transport init →
+     * FOTA check → cloud thread spawn                                 */
     int ret = conexio_cloud_init(cloud_event_handler);
     if (ret) {
         LOG_ERR("conexio_cloud_init failed (%d)", ret);
         return -1;
     }
 
-    /* ── Immediate boot publish ───────────────────────────────────────
-     * Wait for the SDK background thread to establish the MQTT connection,
-     * then push all telemetry immediately — boot-once metrics
-     * (_reboot_reason, _modem_fw, _lte_connect_ms, etc.) are included.
-     * After this the SDK background thread publishes every INTERVAL_SEC. */
-    LOG_INF("Waiting for MQTT connection before boot publish...");
-    int sem_ret = k_sem_take(&cloud_connected_sem, K_SECONDS(60));
-    if (sem_ret == 0) {
+    /* ── Wait for MQTT connection then do boot publish ────────────────
+     * conexio_cloud_wait_connected() blocks until MQTT CONNACK arrives
+     * (or times out). Replaces the manual K_SEM_DEFINE boilerplate.
+     * Boot-once metrics (_reboot_reason, _modem_fw, etc.) are included
+     * in this first publish.                                           */
+    LOG_INF("Waiting for MQTT connection...");
+    if (conexio_cloud_wait_connected(60000) == 0) {
         LOG_INF("Boot publish — sending telemetry immediately after reset");
         int pub_ret = conexio_cloud_publish();
         if (pub_ret) {
@@ -435,13 +449,18 @@ int main(void)
         LOG_WRN("MQTT connect timeout — skipping boot publish");
     }
 
-    /* ── Main loop — just sleep ───────────────────────────────────────
-     * The SDK background thread reads sensors, publishes every
-     * INTERVAL_SEC, manages PSM, buffers offline data, and handles
-     * reconnects. conexio_cloud_get_interval_sec() reflects any runtime
-     * changes from SET_INTERVAL or the telemetryIntervalSec OTA setting. */
+    /* ── Main loop ────────────────────────────────────────────────────
+     * The SDK background thread handles publishing, PSM, offline
+     * buffering, reconnects, and FOTA. This loop just keeps main()
+     * alive and wakes periodically to allow the interval to change.
+     *
+     * Uses a short 5-second poll so SET_INTERVAL or telemetryIntervalSec
+     * OTA Config changes take effect within 5s instead of waiting out
+     * the full current interval (which could be hours for low-power
+     * devices). The background thread does the actual rate control —
+     * this sleep is just to keep main() from spinning.               */
     while (1) {
-        k_sleep(K_SECONDS(conexio_cloud_get_interval_sec()));
+        k_sleep(K_SECONDS(5));
     }
 
     return 0;
