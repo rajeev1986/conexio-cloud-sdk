@@ -297,7 +297,7 @@ config CONEXIO_CLOUD_FOTA
 config CONEXIO_CLOUD_FOTA_DOWNLOAD_TIMEOUT_SEC
 	int "FOTA download timeout (seconds)"
 	default 300
-	range 60 3600
+	range 60 600
 	depends on CONEXIO_CLOUD_FOTA
 	help
 	  Maximum seconds to wait for a firmware binary to download before
@@ -305,7 +305,8 @@ config CONEXIO_CLOUD_FOTA_DOWNLOAD_TIMEOUT_SEC
 	  This option is kept for documentation purposes but is no longer passed
 	  to fota_download_start() (whose 5th argument is fragment_size, not timeout).
 	  Configure the actual timeout via CONFIG_FOTA_DOWNLOAD_TIMEOUT_MS in prj.conf.
-	  Extended to 3600s (1 hour) to cover large binaries on NB-IoT with poor signal.
+	  600s (10 min) is the maximum — beyond this a stuck download drains the
+	  battery without benefit. Typical download time is under 2 minutes on NB-IoT.
 
 # ── Offline buffer — flash-backed telemetry buffering ────────────────────────
 
