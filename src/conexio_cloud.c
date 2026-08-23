@@ -150,6 +150,7 @@ static uint32_t g_publish_fail_count    = 0;
 
 #if defined(CONFIG_CONEXIO_CLOUD_BATTERY_METRICS)
 #include <zephyr/drivers/sensor.h>
+#include <nrf_fuel_gauge.h>  /* nrf_fuel_gauge_process() — must be init'd before use */
 
 /* nPM1300 battery SOC and drain rate tracking ──────────────────────────────
  * g_last_soc_pct:    SOC% at the previous publish (-1 = not yet read).
@@ -173,36 +174,65 @@ static void battery_metrics_init(void)
     }
 }
 
-/* Returns SOC 0–100 as float, or -1.0 on error.
- * Also returns charging state via *is_charging (true = plugged in). */
+/* ── battery_read_soc ────────────────────────────────────────────────────
+ * Read battery state-of-charge % using the nRF Fuel Gauge library.
+ *
+ * The nPM1300 hardware does NOT compute SOC internally. SOC comes from
+ * nrf_fuel_gauge_process() — a Coulomb-counting algorithm that must be
+ * called with fresh V/I/T readings on every sample. We cannot simply
+ * read SENSOR_CHAN_GAUGE_STATE_OF_CHARGE from the driver.
+ *
+ * The fuel gauge must have been initialised by calling fuel_gauge_init()
+ * (done in main.c before conexio_cloud_init()). This function just
+ * drives the algorithm forward on each publish cycle.
+ *
+ * Also returns charging state via *is_charging (true = plugged in).
+ * Returns SOC 0.0–100.0 on success, -1.0 on any read error.
+ */
 static float battery_read_soc(bool *is_charging)
 {
     if (!g_pmic_charger_dev) return -1.0f;
 
+    /* Single sensor_sample_fetch per cycle — reads all channels atomically */
     if (sensor_sample_fetch(g_pmic_charger_dev) < 0) return -1.0f;
 
-    struct sensor_value soc_val;
+    struct sensor_value v_val, i_val, t_val;
+
     if (sensor_channel_get(g_pmic_charger_dev,
-                           SENSOR_CHAN_GAUGE_STATE_OF_CHARGE,
-                           &soc_val) < 0) return -1.0f;
+                           SENSOR_CHAN_GAUGE_VOLTAGE, &v_val) < 0) return -1.0f;
+    if (sensor_channel_get(g_pmic_charger_dev,
+                           SENSOR_CHAN_GAUGE_TEMP, &t_val) < 0) return -1.0f;
+    if (sensor_channel_get(g_pmic_charger_dev,
+                           SENSOR_CHAN_GAUGE_AVG_CURRENT, &i_val) < 0) return -1.0f;
 
-    /* SENSOR_CHAN_GAUGE_STATE_OF_CHARGE: val1 = integer %, val2 = micro-% */
-    float soc = (float)soc_val.val1 + (float)soc_val.val2 / 1000000.0f;
+    float voltage = (float)v_val.val1 + (float)v_val.val2 / 1000000.0f;
+    float temp    = (float)t_val.val1 + (float)t_val.val2 / 1000000.0f;
+    /* Zephyr: negative current = discharging.
+     * nRF Fuel Gauge expects the opposite sign convention: negate here. */
+    float current = -((float)i_val.val1 + (float)i_val.val2 / 1000000.0f);
 
-    /* Determine charging state via average current:
-     * negative current = discharging, positive = charging */
+    /* Determine charging state before sign flip:
+     * Zephyr reports positive val1 for charging current */
     if (is_charging) {
-        struct sensor_value cur_val;
-        if (sensor_channel_get(g_pmic_charger_dev,
-                               SENSOR_CHAN_GAUGE_AVG_CURRENT,
-                               &cur_val) == 0) {
-            /* Zephyr: negative = discharging, positive = charging */
-            *is_charging = (cur_val.val1 > 0) ||
-                           (cur_val.val1 == 0 && cur_val.val2 > 0);
-        } else {
-            *is_charging = false;
-        }
+        *is_charging = (i_val.val1 > 0) ||
+                       (i_val.val1 == 0 && i_val.val2 > 0);
     }
+
+    /* Drive the Coulomb-counting algorithm.
+     * k_uptime_delta_32() returns ms since last call — convert to seconds. */
+    static int64_t last_sample_ms = 0;
+    int64_t now_ms = k_uptime_get();
+    float delta_sec = (last_sample_ms > 0)
+        ? (float)(now_ms - last_sample_ms) / 1000.0f
+        : 0.0f;  /* first call — no delta yet, fuel gauge uses init state */
+    last_sample_ms = now_ms;
+
+    float soc = nrf_fuel_gauge_process(voltage, current, temp, delta_sec, NULL);
+
+    LOG_DBG("battery: V=%.3fV I=%.3fA T=%.1fC SOC=%.1f%% delta=%.1fs",
+            (double)voltage, (double)(-current), (double)temp,
+            (double)soc, (double)delta_sec);
+
     return soc;
 }
 #endif /* CONFIG_CONEXIO_CLOUD_BATTERY_METRICS */
