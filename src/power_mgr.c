@@ -27,7 +27,9 @@ LOG_MODULE_REGISTER(power_mgr, LOG_LEVEL_INF);
 
 static bool g_psm_active = false;
 static bool g_psm_sleeping = false;   /* true only while modem is actually in PSM sleep */
+static bool g_psm_decision_received = false; /* true once network grants or denies PSM */
 static K_SEM_DEFINE(modem_ready_sem, 0, 1);
+static K_SEM_DEFINE(psm_grant_sem, 0, 1);    /* given when network sends PSM_UPDATE */
 
 /* ── LTE event handler ────────────────────────────────────────────────────── */
 
@@ -58,6 +60,12 @@ static void lte_evt_handler(const struct lte_lc_evt *const evt)
             LOG_INF("PSM granted: TAU=%ds, active=%ds",
                     evt->psm_cfg.tau, evt->psm_cfg.active_time);
             g_psm_active = true;
+        }
+        /* Signal that the network has made its PSM decision (grant or deny).
+         * power_mgr_wait_psm_decision() unblocks on this. */
+        if (!g_psm_decision_received) {
+            g_psm_decision_received = true;
+            k_sem_give(&psm_grant_sem);
         }
         break;
 #endif /* CONFIG_LTE_LC_PSM_MODULE */
@@ -152,6 +160,25 @@ int power_mgr_init(const struct power_mgr_config *cfg)
     }
 
     return 0;
+}
+
+int power_mgr_wait_psm_decision(int timeout_sec)
+{
+    if (g_psm_decision_received) {
+        /* Already received before caller got here — no wait needed */
+        return 0;
+    }
+
+    /* Block until LTE_LC_EVT_PSM_UPDATE fires or timeout expires.
+     * The network typically sends this within 100-500 ms of registration.
+     * If it never comes (e.g. PSM not enabled, or prj.conf has PSM off),
+     * this times out gracefully and we proceed — no data is lost. */
+    int ret = k_sem_take(&psm_grant_sem, K_SECONDS(timeout_sec));
+    if (ret == -EAGAIN) {
+        LOG_WRN("PSM decision not received within %ds — proceeding without it",
+                timeout_sec);
+    }
+    return 0;   /* always succeed — timeout is not fatal */
 }
 
 int power_mgr_wake(int timeout_sec)

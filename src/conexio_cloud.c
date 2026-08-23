@@ -2193,6 +2193,20 @@ int conexio_cloud_init(conexio_cloud_event_cb_t cb)
             .edrx_enable         = IS_ENABLED(CONFIG_CONEXIO_CLOUD_EDRX),
         };
         power_mgr_init(&pwr_cfg);
+
+        /* Wait for the network's PSM grant/deny decision before proceeding.
+         *
+         * The network sends LTE_LC_EVT_PSM_UPDATE within ~100-500 ms of
+         * registration. Waiting here ensures:
+         *   1. The first telemetry payload carries accurate _psm_tau_sec and
+         *      _psm_active_sec values (not the -1 sentinel).
+         *   2. The device knows whether PSM was granted before it connects to
+         *      MQTT, so power_mgr_is_psm_active() is reliable from the start.
+         *
+         * 5s timeout is generous — if the network hasn't responded by then
+         * it almost certainly won't grant PSM this session. We proceed either
+         * way; a timeout is logged as a warning, not treated as an error. */
+        power_mgr_wait_psm_decision(5);
     }
 #endif
 
