@@ -13,6 +13,14 @@
  *   in conexio_stratus_pro_common.dtsi. Only the i2c2 pin pull-up needs
  *   to be enabled here to reliably communicate with the PMIC over I2C.
  *
+ * nPM1300 NTC — the Stratus Pro does not have a thermistor physically
+ *   connected to the NTC pin. thermistor-ohms = <0> tells the driver
+ *   (npm13xx_charger.c) to write CHGR_OFFSET_DIS_SET bit 1 = 1, which
+ *   disables the NTC comparator. Without this the charger halts because
+ *   it sees an open circuit on the NTC pin and reports garbage temperature.
+ *   This replaces the manual mfd_npm1300_reg_write() workaround needed in
+ *   NCS ≤ v2.9.0 — the v3.2.1 driver handles it automatically via DTS.
+ *
  * UART0 — low-power configuration:
  *   When building with low_power.conf (CONFIG_SERIAL=n / CONFIG_LOG=n),
  *   the UART RX pin is deleted to prevent current leakage through a
@@ -25,6 +33,12 @@
 	group1 {
 		bias-pull-up;
 	};
+};
+
+/* nPM1300 charger — disable NTC (no thermistor populated on this board) */
+&pmic_charger {
+	thermistor-ohms = <0>;
+	/delete-property/ thermistor-beta;
 };
 
 /* UART0 — delete RX pin to avoid floating-pin leakage in low-power builds */

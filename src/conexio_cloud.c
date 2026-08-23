@@ -209,7 +209,14 @@ static float battery_read_soc(bool *is_charging)
     if (sensor_channel_get(g_pmic_charger_dev,
                            SENSOR_CHAN_GAUGE_VOLTAGE, &v_val) < 0) return -1.0f;
     if (sensor_channel_get(g_pmic_charger_dev,
-                           SENSOR_CHAN_GAUGE_TEMP, &t_val) < 0) return -1.0f;
+                           SENSOR_CHAN_GAUGE_TEMP, &t_val) < 0) {
+        /* NTC not connected (thermistor-ohms = 0 in DTS) — driver returns
+         * -ENOTSUP for GAUGE_TEMP. Use 25°C as a safe default for the
+         * fuel gauge algorithm. SOC accuracy is slightly reduced but the
+         * algorithm remains stable. */
+        t_val.val1 = 25;
+        t_val.val2 = 0;
+    }
     if (sensor_channel_get(g_pmic_charger_dev,
                            SENSOR_CHAN_GAUGE_AVG_CURRENT, &i_val) < 0) return -1.0f;
 
