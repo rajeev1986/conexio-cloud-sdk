@@ -92,12 +92,6 @@
 #include <stdio.h>
 #include <inttypes.h>                 /* PRId64 for schedule watchdog logs  */
 #include <limits.h>                   /* INT_MAX for g_interval_max_sec default */
-/* timegm() is a POSIX extension — enable it before including time.h.
- * Must come before any system header that includes <time.h>. */
-#ifndef _POSIX_C_SOURCE
-#  define _POSIX_C_SOURCE 200809L
-#endif
-#include <time.h>                     /* timegm() — UTC struct tm → epoch  */
 #include <cJSON.h>
 #include <cJSON_os.h>
 #include <modem/nrf_modem_lib.h>
@@ -221,6 +215,35 @@ int conexio_cloud_wait_connected(int32_t timeout_ms)
     k_timeout_t t = (timeout_ms < 0) ? K_FOREVER : K_MSEC(timeout_ms);
     int ret = k_sem_take(&g_connected_sem, t);
     return (ret == 0) ? 0 : -ETIMEDOUT;
+}
+
+/* ── utc_tm_to_epoch ─────────────────────────────────────────────────────
+ * Convert a struct tm expressed in UTC to seconds since the Unix epoch.
+ *
+ * Replaces timegm() which is not available in Zephyr's newlib toolchain
+ * for embedded targets. Uses the proleptic Gregorian calendar algorithm —
+ * no libc dependency, safe on any C99 compiler.
+ *
+ * @param t  struct tm with UTC fields (tm_year, tm_mon, tm_mday,
+ *           tm_hour, tm_min, tm_sec). Other fields are ignored.
+ * @return   Seconds since 1970-01-01 00:00:00 UTC.
+ */
+static int64_t utc_tm_to_epoch(const struct tm *t)
+{
+    /* Days from epoch to 1 March of the given year (Gregorian reform) */
+    int y = t->tm_year + 1900 - (t->tm_mon < 2 ? 1 : 0);
+    int m = t->tm_mon + 1;           /* 1-12 */
+    if (m <= 2) m += 12;
+
+    /* Julian Day Number for 1 March, then adjust back to Jan 1 */
+    int64_t days = (int64_t)365 * y + y / 4 - y / 100 + y / 400
+                 + (153 * m - 457) / 5
+                 + t->tm_mday - 719469;  /* offset to Unix epoch */
+
+    return days * 86400LL
+         + t->tm_hour * 3600LL
+         + t->tm_min  * 60LL
+         + t->tm_sec;
 }
 
 /* ── Command registry ─────────────────────────────────────────────────────
@@ -1277,7 +1300,7 @@ void transport_on_message(const char *json_str, size_t len)
                         tm_until.tm_sec  = sc;
                         /* timegm converts UTC struct tm → epoch (POSIX extension).
                          * Zephyr's newlib provides timegm when POSIX_CLOCK is y. */
-                        int64_t until_ms = (int64_t)timegm(&tm_until) * 1000LL;
+                        int64_t until_ms = (int64_t)utc_tm_to_epoch(&tm_until) * 1000LL;
                         if (now_ms > until_ms) {
                             LOG_WRN("Command '%s' expired (validUntil=%s) — skipping",
                                     name, valid_until);
@@ -1340,8 +1363,8 @@ void transport_on_message(const char *json_str, size_t len)
                     tm2.tm_hour = hr2;
                     tm2.tm_min  = mn2;
                     tm2.tm_sec  = sc2;
-                    /* Use timegm (UTC) not mktime (local time) */
-                    int64_t stop_at_ms = (int64_t)timegm(&tm2) * 1000LL;
+                    /* Use utc_tm_to_epoch (UTC) not mktime (local time) */
+                    int64_t stop_at_ms = (int64_t)utc_tm_to_epoch(&tm2) * 1000LL;
 
                     /* Extract optional stopPayload */
                     const cJSON *spld = cJSON_GetObjectItem(msg, "stopPayload");

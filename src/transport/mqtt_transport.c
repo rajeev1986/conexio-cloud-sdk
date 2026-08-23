@@ -277,12 +277,15 @@ static void mqtt_evt_handler(struct mqtt_client *c, const struct mqtt_evt *evt)
         }
         payload_buf[ret] = '\0';
 
-        /* Parse enough to extract IDs for ACK before handing off. */
+        /* Parse enough to extract IDs for ACK before handing off.
+         * config_id is extracted here but the config ACK is sent AFTER
+         * dispatch (via transport_config_ack in conexio_cloud.c) so it
+         * reflects the real handler result. It is not used in this scope. */
         cJSON *msg       = cJSON_Parse((char *)payload_buf);
         const char *type       = msg ? cJSON_GetStringValue(cJSON_GetObjectItem(msg, "type"))      : NULL;
         const char *command_id = msg ? cJSON_GetStringValue(cJSON_GetObjectItem(msg, "commandId")) : NULL;
         const char *sk         = msg ? cJSON_GetStringValue(cJSON_GetObjectItem(msg, "sk"))        : NULL;
-        const char *config_id  = msg ? cJSON_GetStringValue(cJSON_GetObjectItem(msg, "configId"))  : NULL;
+        (void)(msg ? cJSON_GetObjectItem(msg, "configId") : NULL); /* extracted in SDK after dispatch */
 
         LOG_INF("MQTT message received on topic: %.*s (%d bytes)",
                 (int)p->message.topic.topic.size,
