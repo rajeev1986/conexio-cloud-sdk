@@ -35,10 +35,14 @@
 	};
 };
 
-/* nPM1300 charger — disable NTC (no thermistor populated on this board) */
+/* nPM1300 charger — disable NTC (no thermistor populated on this board).
+ * thermistor-ohms = <0> → driver sets thermistor_idx = 0 → automatically
+ * writes CHGR_OFFSET_DIS_SET bit 1 at init (NTC comparator disabled).
+ * thermistor-beta must be present (binding marks it required) but is
+ * ignored by the driver when thermistor-ohms = 0. */
 &pmic_charger {
 	thermistor-ohms = <0>;
-	/delete-property/ thermistor-beta;
+	thermistor-beta = <0>;
 };
 
 /* UART0 — delete RX pin to avoid floating-pin leakage in low-power builds */
