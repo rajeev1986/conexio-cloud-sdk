@@ -327,7 +327,7 @@ int main(void)
 {
     LOG_INF("=== Conexio Advanced Sample ===");
     LOG_INF("App firmware : v%s", APP_VERSION_STRING);
-    LOG_INF("SDK version  : %s", conexio_cloud_version());
+    // LOG_INF("SDK version  : %s", conexio_cloud_version());
 
     /* ── LED GPIO init ────────────────────────────────────────────────
      * Configure the on-board LED as output, initially OFF.
