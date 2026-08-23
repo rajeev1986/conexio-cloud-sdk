@@ -955,7 +955,14 @@ static void builtin_on_set_interval(const char *payload_json, void *arg)
 static enum conexio_setting_status builtin_on_interval_setting(int32_t value, void *arg)
 {
     ARG_UNUSED(arg);
-    if (value < 10 || value > 3600) return CONEXIO_SETTING_VALUE_OUT_OF_RANGE;
+    /* Validate against the application-registered limits (set via
+     * conexio_cloud_register_interval). This ensures telemetryIntervalSec
+     * from the OTA Config page honours the same bounds as SET_INTERVAL. */
+    if (value < g_interval_min_sec || value > g_interval_max_sec) {
+        LOG_WRN("telemetryIntervalSec: %d out of range [%d, %d] — ignoring",
+                (int)value, g_interval_min_sec, g_interval_max_sec);
+        return CONEXIO_SETTING_VALUE_OUT_OF_RANGE;
+    }
     g_sdk_interval_sec = (int)value;
     LOG_INF("SDK: telemetryIntervalSec → %ds", g_sdk_interval_sec);
     return CONEXIO_SETTING_OK;
