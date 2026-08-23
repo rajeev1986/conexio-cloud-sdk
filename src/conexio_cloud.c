@@ -163,11 +163,9 @@ static const struct device *g_pmic_charger_dev;
 
 static void battery_metrics_init(void)
 {
-    g_pmic_charger_dev = device_get_binding("pmic_charger");
-    if (!g_pmic_charger_dev) {
-        /* Fall back to DT label lookup */
-        g_pmic_charger_dev = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(pmic_charger));
-    }
+    /* Use DT-based device lookup — device_get_binding() is deprecated
+     * in NCS v3.2.1 and may return NULL even when the device exists. */
+    g_pmic_charger_dev = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(pmic_charger));
     if (!g_pmic_charger_dev || !device_is_ready(g_pmic_charger_dev)) {
         LOG_WRN("battery_metrics: pmic_charger device not ready — "
                 "_battery_soc_pct and _battery_drain_pct_hr unavailable");
@@ -695,6 +693,10 @@ static void sched_watchdog_boot_check(void)
         sched_wdt_nvs_clear();
 
         if (g_schedule_cb) {
+            /* NOTE: evt.stop_command points into stack-local rec.
+             * This is safe because g_schedule_cb is called synchronously
+             * here. Do not make this callback async without copying the
+             * string to a persistent buffer first. */
             struct conexio_schedule_event evt = {
                 .type         = CONEXIO_SCHEDULE_EVT_EXPIRED,
                 .stop_command = rec.stop_command,
@@ -1248,6 +1250,10 @@ void transport_on_message(const char *json_str, size_t len)
                     /* Parse validUntil ISO-8601 string to ms since epoch.
                      * strptime is not available in Zephyr so we use a
                      * lightweight sscanf approach. */
+                    /* Parse validUntil ISO-8601 UTC → epoch ms.
+                     * Do NOT use mktime() — it interprets struct tm as local
+                     * time. Zephyr date_time_now() is UTC, so we must compute
+                     * epoch from UTC fields directly. */
                     struct tm tm_until = {0};
                     int yr, mo, dy, hr, mn, sc;
                     if (sscanf(valid_until, "%d-%d-%dT%d:%d:%d",
@@ -1258,12 +1264,9 @@ void transport_on_message(const char *json_str, size_t len)
                         tm_until.tm_hour = hr;
                         tm_until.tm_min  = mn;
                         tm_until.tm_sec  = sc;
-                        time_t until_t = mktime(&tm_until);
-                        /* mktime treats as local time; UTC adjustment:
-                         * since device NTP sets UTC, tm is UTC — use
-                         * timegm-equivalent: subtract local offset.
-                         * Simpler: compare epoch seconds directly. */
-                        int64_t until_ms = (int64_t)until_t * 1000LL;
+                        /* timegm converts UTC struct tm → epoch (POSIX extension).
+                         * Zephyr's newlib provides timegm when POSIX_CLOCK is y. */
+                        int64_t until_ms = (int64_t)timegm(&tm_until) * 1000LL;
                         if (now_ms > until_ms) {
                             LOG_WRN("Command '%s' expired (validUntil=%s) — skipping",
                                     name, valid_until);
@@ -1326,7 +1329,8 @@ void transport_on_message(const char *json_str, size_t len)
                     tm2.tm_hour = hr2;
                     tm2.tm_min  = mn2;
                     tm2.tm_sec  = sc2;
-                    int64_t stop_at_ms = (int64_t)mktime(&tm2) * 1000LL;
+                    /* Use timegm (UTC) not mktime (local time) */
+                    int64_t stop_at_ms = (int64_t)timegm(&tm2) * 1000LL;
 
                     /* Extract optional stopPayload */
                     const cJSON *spld = cJSON_GetObjectItem(msg, "stopPayload");

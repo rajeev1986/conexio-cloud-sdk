@@ -152,7 +152,13 @@ int retry_on_failure(void)
      */
     int remaining = wait_sec;
     while (remaining > 0) {
-        int chunk = MIN(remaining, (g_cfg.wdt_timeout_sec / 2));
+        /* Kick at most every (wdt_timeout / 2) seconds.
+         * Floor at 1s so chunk is never 0 (avoids infinite loop if
+         * wdt_timeout_sec is misconfigured to a very small value). */
+        int half_wdt = (g_cfg.wdt_timeout_sec > 1)
+                       ? (g_cfg.wdt_timeout_sec / 2)
+                       : 1;
+        int chunk = MIN(remaining, half_wdt);
         k_sleep(K_SECONDS(chunk));
         retry_kick_watchdog();
         remaining -= chunk;
