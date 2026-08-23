@@ -203,6 +203,20 @@ config CONEXIO_CLOUD_AUTO_BATTERY
 	  conexio_cloud_register_sensor("_battery_mv", read_battery_mv, NULL)
 	  to use the more accurate fuel gauge reading instead.
 
+config CONEXIO_CLOUD_BATTERY_METRICS
+	bool "Enable nPM1300 fuel gauge battery health metrics"
+	default n
+	depends on NRF_FUEL_GAUGE
+	help
+	  When enabled, the SDK reads additional battery health metrics from the
+	  nPM1300 fuel gauge on every publish:
+	    _battery_soc_pct       — state of charge in percent (0–100)
+	    _battery_drain_pct_hr  — average drain rate in %/hour since last publish
+	                             (only emitted during discharge; skipped while charging)
+	  Requires CONFIG_NRF_FUEL_GAUGE=y and a 'pmic_charger' node in the devicetree.
+	  Set CONFIG_CONEXIO_CLOUD_AUTO_BATTERY=n when using this option (avoids
+	  double-reporting battery voltage via the less accurate modem AT%%XVBAT path).
+
 config CONEXIO_CLOUD_MODEM_INFO_REFRESH
 	int "Modem info refresh interval (publishes)"
 	default 5

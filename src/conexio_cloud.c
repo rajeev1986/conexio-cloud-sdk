@@ -141,6 +141,74 @@ LOG_MODULE_REGISTER(conexio_cloud, LOG_LEVEL_INF);
 static enum conexio_cloud_status g_sdk_status = CONEXIO_CLOUD_STATUS_INIT;
 static K_SEM_DEFINE(g_connected_sem, 0, 1);  /* given on MQTT CONNACK */
 
+/* ── Publish reliability counters ────────────────────────────────────────── */
+/* Accumulated since boot — published as _publish_success_count and
+ * _publish_fail_count on every telemetry payload so the cloud can
+ * compute a per-device publish reliability percentage. */
+static uint32_t g_publish_success_count = 0;
+static uint32_t g_publish_fail_count    = 0;
+
+#if defined(CONFIG_CONEXIO_CLOUD_BATTERY_METRICS)
+#include <zephyr/drivers/sensor.h>
+
+/* nPM1300 battery SOC and drain rate tracking ──────────────────────────────
+ * g_last_soc_pct:    SOC% at the previous publish (-1 = not yet read).
+ * g_last_pub_time_ms: k_uptime_get() at the previous publish.
+ * We track these between publishes to compute instantaneous drain rate. */
+static int32_t  g_last_soc_pct      = -1;
+static int64_t  g_last_pub_time_ms  =  0;
+
+/* Device handle — obtained lazily on first use. */
+static const struct device *g_pmic_charger_dev;
+
+static void battery_metrics_init(void)
+{
+    g_pmic_charger_dev = device_get_binding("pmic_charger");
+    if (!g_pmic_charger_dev) {
+        /* Fall back to DT label lookup */
+        g_pmic_charger_dev = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(pmic_charger));
+    }
+    if (!g_pmic_charger_dev || !device_is_ready(g_pmic_charger_dev)) {
+        LOG_WRN("battery_metrics: pmic_charger device not ready — "
+                "_battery_soc_pct and _battery_drain_pct_hr unavailable");
+        g_pmic_charger_dev = NULL;
+    }
+}
+
+/* Returns SOC 0–100 as float, or -1.0 on error.
+ * Also returns charging state via *is_charging (true = plugged in). */
+static float battery_read_soc(bool *is_charging)
+{
+    if (!g_pmic_charger_dev) return -1.0f;
+
+    if (sensor_sample_fetch(g_pmic_charger_dev) < 0) return -1.0f;
+
+    struct sensor_value soc_val;
+    if (sensor_channel_get(g_pmic_charger_dev,
+                           SENSOR_CHAN_GAUGE_STATE_OF_CHARGE,
+                           &soc_val) < 0) return -1.0f;
+
+    /* SENSOR_CHAN_GAUGE_STATE_OF_CHARGE: val1 = integer %, val2 = micro-% */
+    float soc = (float)soc_val.val1 + (float)soc_val.val2 / 1000000.0f;
+
+    /* Determine charging state via average current:
+     * negative current = discharging, positive = charging */
+    if (is_charging) {
+        struct sensor_value cur_val;
+        if (sensor_channel_get(g_pmic_charger_dev,
+                               SENSOR_CHAN_GAUGE_AVG_CURRENT,
+                               &cur_val) == 0) {
+            /* Zephyr: negative = discharging, positive = charging */
+            *is_charging = (cur_val.val1 > 0) ||
+                           (cur_val.val1 == 0 && cur_val.val2 > 0);
+        } else {
+            *is_charging = false;
+        }
+    }
+    return soc;
+}
+#endif /* CONFIG_CONEXIO_CLOUD_BATTERY_METRICS */
+
 enum conexio_cloud_status conexio_cloud_get_status(void) { return g_sdk_status; }
 
 int conexio_cloud_wait_connected(int32_t timeout_ms)
@@ -670,14 +738,18 @@ static char g_reboot_reason[REBOOT_REASON_LEN] = "unknown";
 
 static const char *reason_to_string(uint32_t cause)
 {
+    /* Priority order: most severe / actionable first.
+     * Matches Memfault's nrfx_pmu_reboot_tracking.c decode order. */
     if (cause & RESET_WATCHDOG)       return "watchdog";
     if (cause & RESET_CPU_LOCKUP)     return "lockup";
     if (cause & RESET_BROWNOUT)       return "brownout";
     if (cause & RESET_SOFTWARE)       return "software";
     if (cause & RESET_PIN)            return "pin";
     if (cause & RESET_POR)            return "por";
-    if (cause & RESET_LOW_POWER_WAKE) return "wake";
-    if (cause & RESET_DEBUG)          return "debug";
+    if (cause & RESET_LOW_POWER_WAKE) return "deepsleep"; /* GPIO/LPCOMP/VBUS wakeup */
+    if (cause & RESET_DEBUG)          return "debug";     /* debugger-halted reset */
+    /* cause == 0 means a clean Power-On Reset with no register bits set */
+    if (cause == 0)                   return "por";
     return "unknown";
 }
 
@@ -1644,6 +1716,50 @@ skip_modem_metrics:;  /* jump target if modem_info_params_get fails */
                                 (double)lm->connection_loss_count);
     }
 
+    /* _publish_success_count / _publish_fail_count ─────────────────────
+     * Accumulated since boot. Lets the cloud compute per-device publish
+     * reliability: success_rate = success / (success + fail) × 100%.
+     * Only meaningful after the first successful publish (count starts at 0). */
+    cJSON_AddNumberToObject(metrics, "_publish_success_count",
+                            (double)g_publish_success_count);
+    if (g_publish_fail_count > 0) {
+        cJSON_AddNumberToObject(metrics, "_publish_fail_count",
+                                (double)g_publish_fail_count);
+    }
+
+#if defined(CONFIG_CONEXIO_CLOUD_BATTERY_METRICS)
+    /* _battery_soc_pct / _battery_drain_pct_hr ──────────────────────────
+     * Read state-of-charge from the nPM1300 fuel gauge.
+     * Drain rate is computed as: (prev_soc - cur_soc) / elapsed_hours.
+     * Only emitted during discharge — skipped while charging or if SOC
+     * increased (e.g. charger plugged in between publishes). */
+    {
+        bool is_charging = false;
+        float soc = battery_read_soc(&is_charging);
+        if (soc >= 0.0f) {
+            cJSON_AddNumberToObject(metrics, "_battery_soc_pct", (double)soc);
+
+            int64_t now_ms = k_uptime_get();
+            if (!is_charging && g_last_soc_pct >= 0 && g_last_pub_time_ms > 0) {
+                float elapsed_hr = (float)(now_ms - g_last_pub_time_ms) / 3600000.0f;
+                if (elapsed_hr > 0.0f) {
+                    float drain = ((float)g_last_soc_pct - soc) / elapsed_hr;
+                    /* Only emit when actually draining (positive drain rate).
+                     * Negative values mean SOC went up — charger was removed
+                     * and reconnected mid-interval, not a meaningful reading. */
+                    if (drain > 0.0f) {
+                        cJSON_AddNumberToObject(metrics, "_battery_drain_pct_hr",
+                                                (double)drain);
+                    }
+                }
+            }
+            /* Update tracking state for next publish */
+            g_last_soc_pct     = (int32_t)soc;
+            g_last_pub_time_ms = now_ms;
+        }
+    }
+#endif /* CONFIG_CONEXIO_CLOUD_BATTERY_METRICS */
+
 #if defined(CONFIG_CONEXIO_CLOUD_AUTO_BATTERY)
     /* Battery voltage via AT%XVBAT — uses modem_info_get_batt_voltage()
      * which calls nrf_modem_at_scanf("AT%%XVBAT", "%%XVBAT: %%d", &val)
@@ -1824,6 +1940,13 @@ static void cloud_thread_fn(void *a, void *b, void *c)
                     last_publish_ms = now; /* advance timer to avoid busy-loop */
                 } else {
                     int pub_ret = conexio_cloud_publish();
+
+                    /* Track publish reliability */
+                    if (pub_ret == 0) {
+                        g_publish_success_count++;
+                    } else {
+                        g_publish_fail_count++;
+                    }
 
 #if defined(CONFIG_CONEXIO_CLOUD_OFFLINE_BUFFER)
                     /* Buffer the payload if publish failed due to no connection */
@@ -2041,6 +2164,10 @@ int conexio_cloud_init(conexio_cloud_event_cb_t cb)
     if (modem_info_connectivity_stats_init() != 0) {
         LOG_WRN("modem_info_connectivity_stats_init failed — _tx_kb/_rx_kb unavailable");
     }
+
+#if defined(CONFIG_CONEXIO_CLOUD_BATTERY_METRICS)
+    battery_metrics_init();
+#endif
 
     /* ── Step 2b: Derive device ID (IMEI) ───────────────────────────────
      * modem_info_string_get(MODEM_INFO_IMEI) issues a single AT+CGSN command.
