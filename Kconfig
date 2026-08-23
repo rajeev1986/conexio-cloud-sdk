@@ -218,12 +218,13 @@ config CONEXIO_CLOUD_SLOW_METRIC_INTERVAL
 config CONEXIO_CLOUD_NTP_TIMEOUT_SEC
 	int "NTP sync timeout (seconds)"
 	default 10
-	range 3 60
+	range 3 120
 	help
 	  Maximum seconds to wait for NTP sync during conexio_cloud_init().
 	  The SDK uses an event-driven wait rather than a blind k_sleep().
 	  If NTP doesn't respond within this window, init continues and the
 	  offline buffer will skip payloads with invalid timestamps.
+	  Increase to 60–120s on NB-IoT or congested networks.
 
 # ── LTE ───────────────────────────────────────────────────────────────────────
 
@@ -296,7 +297,7 @@ config CONEXIO_CLOUD_FOTA
 config CONEXIO_CLOUD_FOTA_DOWNLOAD_TIMEOUT_SEC
 	int "FOTA download timeout (seconds)"
 	default 300
-	range 60 900
+	range 60 3600
 	depends on CONEXIO_CLOUD_FOTA
 	help
 	  Maximum seconds to wait for a firmware binary to download before
@@ -304,6 +305,7 @@ config CONEXIO_CLOUD_FOTA_DOWNLOAD_TIMEOUT_SEC
 	  This option is kept for documentation purposes but is no longer passed
 	  to fota_download_start() (whose 5th argument is fragment_size, not timeout).
 	  Configure the actual timeout via CONFIG_FOTA_DOWNLOAD_TIMEOUT_MS in prj.conf.
+	  Extended to 3600s (1 hour) to cover large binaries on NB-IoT with poor signal.
 
 # ── Offline buffer — flash-backed telemetry buffering ────────────────────────
 
@@ -353,21 +355,23 @@ config CONEXIO_CLOUD_PSM
 config CONEXIO_CLOUD_PSM_TAU_SEC
 	int "PSM Tracking Area Update timer (seconds)"
 	default 3600
-	range 60 86400
+	range 60 604800
 	depends on CONEXIO_CLOUD_PSM
 	help
 	  How often the modem sends a keepalive (T3412 timer) to the network.
 	  Set to at least 2× your telemetry interval to avoid extra radio wakeups.
+	  Maximum matches INTERVAL_SEC ceiling (7 days) for ultra-low-power deployments.
 
 config CONEXIO_CLOUD_PSM_ACTIVE_TIME_SEC
 	int "PSM active window (seconds)"
 	default 10
-	range 2 60
+	range 2 300
 	depends on CONEXIO_CLOUD_PSM
 	help
 	  How long the modem stays awake after waking (T3324 timer).
 	  Must be long enough for LTE re-registration + full MQTT publish cycle.
-	  10 seconds is sufficient for most use cases.
+	  10–30 seconds is sufficient for most networks; increase to 120–300s
+	  on congested or slow-to-register NB-IoT deployments.
 
 config CONEXIO_CLOUD_EDRX
 	bool "Enable eDRX instead of PSM"
@@ -402,10 +406,12 @@ config CONEXIO_CLOUD_RETRY_BASE_SEC
 config CONEXIO_CLOUD_RETRY_MAX_SEC
 	int "Maximum retry interval (seconds)"
 	default 300
-	range 30 3600
+	range 30 86400
 	depends on CONEXIO_CLOUD_RETRY
 	help
-	  Retry interval cap (5 minutes by default).
+	  Retry interval cap. Default 300s (5 minutes) is suitable for most
+	  deployments. Increase for remote sensors where you want the device
+	  to keep retrying slowly for extended periods before rebooting.
 
 config CONEXIO_CLOUD_RETRY_MAX_ATTEMPTS
 	int "Maximum consecutive failures before reboot"
@@ -419,10 +425,12 @@ config CONEXIO_CLOUD_RETRY_MAX_ATTEMPTS
 config CONEXIO_CLOUD_WATCHDOG_TIMEOUT_SEC
 	int "Hardware watchdog timeout (seconds)"
 	default 600
-	range 60 3600
+	range 60 86400
 	depends on CONEXIO_CLOUD_RETRY
 	help
 	  The hardware watchdog fires and reboots the device if retry_kick_watchdog()
 	  has not been called within this window. Call it from your main loop.
+	  Must be greater than RETRY_MAX_SEC × RETRY_MAX_ATTEMPTS to avoid
+	  a spurious reboot during a normal backoff sequence.
 
 endif # CONEXIO_CLOUD
