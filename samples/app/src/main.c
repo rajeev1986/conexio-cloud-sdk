@@ -172,6 +172,23 @@ static double read_battery_mv(void *arg)
         return (double)NAN;
     }
 
+#if defined(CONFIG_CONEXIO_CLOUD_BATTERY_METRICS)
+    /* When CONFIG_CONEXIO_CLOUD_BATTERY_METRICS=y the SDK's battery_read_soc()
+     * has already called sensor_sample_fetch() and cached the voltage in
+     * g_last_battery_mv. Re-use it — no second fetch needed on the same cycle.
+     *
+     * NOTE: The SDK calls sensor callbacks (this function) BEFORE calling
+     * battery_read_soc() in build_payload(). So on the very first publish
+     * g_last_battery_mv is NAN and we fall through to a direct read below.
+     * On all subsequent publishes the cached value is already fresh. */
+    extern double g_last_battery_mv;
+    if (!isnan(g_last_battery_mv)) {
+        return g_last_battery_mv;
+    }
+#endif
+
+    /* Direct read — used on first publish (cache not yet populated) or
+     * when CONFIG_CONEXIO_CLOUD_BATTERY_METRICS=n. */
     struct sensor_value voltage;
 
     int ret = sensor_sample_fetch(pmic_charger);

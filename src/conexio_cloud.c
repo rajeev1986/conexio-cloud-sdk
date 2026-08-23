@@ -158,6 +158,7 @@ static uint32_t g_publish_fail_count    = 0;
  * We track these between publishes to compute instantaneous drain rate. */
 static int32_t  g_last_soc_pct      = -1;
 static int64_t  g_last_pub_time_ms  =  0;
+static double   g_last_battery_mv   = NAN; /* voltage from most recent fuel gauge read */
 
 /* Device handle — obtained lazily on first use. */
 static const struct device *g_pmic_charger_dev;
@@ -210,6 +211,10 @@ static float battery_read_soc(bool *is_charging)
     /* Zephyr: negative current = discharging.
      * nRF Fuel Gauge expects the opposite sign convention: negate here. */
     float current = -((float)i_val.val1 + (float)i_val.val2 / 1000000.0f);
+
+    /* Cache voltage in mV so read_battery_mv() can use it without a
+     * second sensor_sample_fetch() on the same publish cycle. */
+    g_last_battery_mv = (double)voltage * 1000.0;
 
     /* Determine charging state before sign flip:
      * Zephyr reports positive val1 for charging current */
