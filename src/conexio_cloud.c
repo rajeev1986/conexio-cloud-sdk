@@ -1833,12 +1833,15 @@ skip_modem_metrics:;  /* jump target if modem_info_params_get fails */
     /* _publish_success_count / _publish_fail_count ─────────────────────
      * Accumulated since boot. Lets the cloud compute per-device publish
      * reliability: success_rate = success / (success + fail) × 100%.
-     * Only meaningful after the first successful publish (count starts at 0). */
-    cJSON_AddNumberToObject(metrics, "_publish_success_count",
-                            (double)g_publish_success_count);
-    if (g_publish_fail_count > 0) {
-        cJSON_AddNumberToObject(metrics, "_publish_fail_count",
-                                (double)g_publish_fail_count);
+     * Omitted on the very first publish (both are 0 — meaningless noise).
+     * From the second publish onward the counter reflects real history. */
+    if (g_publish_success_count > 0 || g_publish_fail_count > 0) {
+        cJSON_AddNumberToObject(metrics, "_publish_success_count",
+                                (double)g_publish_success_count);
+        if (g_publish_fail_count > 0) {
+            cJSON_AddNumberToObject(metrics, "_publish_fail_count",
+                                    (double)g_publish_fail_count);
+        }
     }
 
 #if defined(CONFIG_CONEXIO_CLOUD_BATTERY_METRICS)
