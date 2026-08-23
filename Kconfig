@@ -133,7 +133,13 @@ config CONEXIO_CLOUD_STATIC_DEVICE_ID
 config CONEXIO_CLOUD_INTERVAL_SEC
 	int "Telemetry publish interval (seconds)"
 	default 3600
-	range 10 3600
+	range 10 604800
+	help
+	  How often the SDK publishes a telemetry payload to Conexio Cloud.
+	  Minimum: 10 seconds (development / high-frequency monitoring).
+	  Maximum: 604800 seconds (7 days — ultra-low-power deployments).
+	  For PSM-enabled devices set this to match or exceed PSM_TAU_SEC
+	  so the modem wakes only when there is data to send.
 
 config CONEXIO_CLOUD_METRIC_QUEUE_SIZE
 	int "Maximum metrics buffered per publish"
