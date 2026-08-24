@@ -32,6 +32,12 @@
  * interval so you can publish telemetry frequently while only resolving
  * location a few times per day, keeping API costs minimal.
  *
+ * When CONFIG_CELL_LOCATION_PUBLISH_ON_FIX=y (default), the SDK triggers an
+ * immediate conexio_cloud_publish() as soon as the _loc_* metrics are queued,
+ * via a k_work item in the system workqueue. This ensures the dashboard sees
+ * the new location data right away rather than waiting hours for the next
+ * scheduled publish interval.
+ *
  * Usage:
  *   #include <conexio_cloud/cell_location.h>
  *

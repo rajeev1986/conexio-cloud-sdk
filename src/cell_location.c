@@ -49,9 +49,32 @@
 LOG_MODULE_REGISTER(cell_location, LOG_LEVEL_INF);
 
 /* ── State ────────────────────────────────────────────────────────────── */
-static bool     g_initialised       = false;
+static bool     g_initialised        = false;
 static bool     g_measurement_active = false;
-static uint32_t g_tick_counter      = 0;   /* seconds since last measurement */
+static uint32_t g_tick_counter       = 0;   /* seconds since last measurement */
+
+/* ── Deferred publish work item ───────────────────────────────────────
+ *
+ * The LTE LC event handler runs in the LTE LC system work queue context.
+ * Calling conexio_cloud_publish() directly from there is unsafe — it can
+ * block and re-enter MQTT paths that expect to run from a different thread.
+ *
+ * Instead, schedule a k_work item that runs in the system workqueue and
+ * calls conexio_cloud_publish() safely after all _loc_* metrics are queued.
+ */
+#if defined(CONFIG_CELL_LOCATION_PUBLISH_ON_FIX)
+static void publish_work_handler(struct k_work *work)
+{
+	ARG_UNUSED(work);
+	LOG_INF("cell_location: triggering immediate publish with location metrics");
+	int ret = conexio_cloud_publish();
+	if (ret) {
+		LOG_WRN("cell_location: immediate publish failed (%d) — "
+			"metrics will ride next scheduled interval", ret);
+	}
+}
+static K_WORK_DEFINE(g_publish_work, publish_work_handler);
+#endif
 
 /* ── RSRP raw index → dBm ─────────────────────────────────────────────
  * Per 3GPP TS 36.133: RSRP_dBm = index - 141  (NCS convention)
@@ -184,7 +207,15 @@ static void process_cell_measurement(const struct lte_lc_cells_info *cells)
 		}
 	}
 
-	LOG_INF("cell_location: location metrics queued — will publish on next interval");
+	LOG_INF("cell_location: location metrics queued — publishing immediately");
+
+#if defined(CONFIG_CELL_LOCATION_PUBLISH_ON_FIX)
+	/* Schedule publish in system workqueue — safe to call from LTE LC
+	 * event handler context. submit is a no-op if already pending. */
+	k_work_submit(&g_publish_work);
+#else
+	LOG_INF("cell_location: publish-on-fix disabled — metrics ride next interval");
+#endif
 }
 
 /* ── LTE LC event handler ──────────────────────────────────────────────

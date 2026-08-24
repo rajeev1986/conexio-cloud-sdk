@@ -543,6 +543,23 @@ config CELL_LOCATION_INTERVAL_SEC
 	  The measurement takes 1–5 seconds and keeps the radio active, so
 	  avoid calling it more than needed on battery-powered devices.
 
+config CELL_LOCATION_PUBLISH_ON_FIX
+	bool "Publish telemetry immediately after a location fix"
+	default y
+	depends on CELL_LOCATION
+	help
+	  When enabled (default), the SDK triggers an immediate telemetry
+	  publish as soon as the AT%NCELLMEAS result is processed and the
+	  _loc_* metrics are queued. This ensures the dashboard receives the
+	  latest location data right away rather than waiting for the next
+	  scheduled publish interval (which can be hours on low-power devices).
+
+	  The publish is dispatched via a k_work item so it runs safely in the
+	  system workqueue, not inside the LTE LC event handler callback.
+
+	  Disable if you prefer location metrics to ride the next regular
+	  telemetry publish (e.g. to batch location with other sensor data).
+
 endmenu # Cellular Location
 
 endif # CONEXIO_CLOUD
