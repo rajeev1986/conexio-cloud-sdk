@@ -48,7 +48,7 @@
 
 /* Cellular location — collects AT%NCELLMEAS data for AWS Location Service */
 #if defined(CONFIG_CELL_LOCATION)
-#include "cell_location.h"
+#include <conexio_cloud/cell_location.h>
 #endif
 
 LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
@@ -475,8 +475,10 @@ int main(void)
     /* ── Cellular location init ───────────────────────────────────────
      * Registers the LTE LC event handler for AT%NCELLMEAS results.
      * Must run after LTE is connected (after conexio_cloud_init).
-     * Trigger an immediate location fix on boot so the first telemetry
-     * publish already carries cell data for the AWS Location Lambda.  */
+     * Trigger an immediate fix on boot — metrics ride the first publish.
+     * The SDK calls cell_location_tick() from the main loop every 5s
+     * to drive the CONFIG_CELL_LOCATION_INTERVAL_SEC countdown for all
+     * subsequent measurements.                                         */
     if (cell_location_init() == 0) {
         LOG_INF("Requesting initial cell location fix...");
         cell_location_request();
@@ -486,28 +488,22 @@ int main(void)
     /* ── Main loop ────────────────────────────────────────────────────
      * The SDK background thread handles publishing, PSM, offline
      * buffering, reconnects, and FOTA. This loop just keeps main()
-     * alive and wakes periodically to allow the interval to change.
+     * alive and wakes periodically to:
+     *   - allow SET_INTERVAL / telemetryIntervalSec to take effect fast
+     *   - call cell_location_tick() to drive the location interval
      *
-     * Uses a short 5-second poll so SET_INTERVAL or telemetryIntervalSec
-     * OTA Config changes take effect within 5s instead of waiting out
-     * the full current interval (which could be hours for low-power
-     * devices). The background thread does the actual rate control —
-     * this sleep is just to keep main() from spinning.               */
-    uint32_t loop_count = 0;
+     * Uses 5-second sleep so interval changes take effect within 5s
+     * instead of waiting out the full current publish interval.       */
     while (1) {
         k_sleep(K_SECONDS(5));
-        loop_count++;
 
 #if defined(CONFIG_CELL_LOCATION)
-        /* Request a new cell measurement once per telemetry interval.
-         * CONFIG_CONEXIO_CLOUD_INTERVAL_SEC / 5s poll = wake cycles per interval.
-         * Example: 60s interval → request every 12th wake (60/5 = 12).
-         * cell_location_is_busy() prevents stacking concurrent requests.  */
-        uint32_t cycles_per_interval = MAX(1, CONFIG_CONEXIO_CLOUD_INTERVAL_SEC / 5);
-        if ((loop_count % cycles_per_interval) == 0) {
-            if (!cell_location_is_busy()) {
-                cell_location_request();
-            }
+        /* Advance the location interval countdown by 5 seconds.
+         * cell_location_tick() fires cell_location_request() automatically
+         * when CONFIG_CELL_LOCATION_INTERVAL_SEC seconds have elapsed.
+         * No manual loop_count math needed — the SDK handles it.      */
+        for (int i = 0; i < 5; i++) {
+            cell_location_tick();
         }
 #endif
     }

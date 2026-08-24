@@ -497,4 +497,52 @@ config CONEXIO_CLOUD_WATCHDOG_TIMEOUT_SEC
 
 endmenu # Retry and Watchdog
 
+# ── Cellular Location (AWS Location Service) ─────────────────────────────────
+
+menu "Cellular Location"
+
+config CELL_LOCATION
+	bool "Enable cellular location via AT%NCELLMEAS"
+	depends on CONEXIO_CLOUD
+	select LTE_LC_NEIGHBOR_CELL_MEAS_MODULE
+	select CJSON_LIB
+	help
+	  Enables neighbor cell measurement using the AT%NCELLMEAS command.
+	  Serving cell + up to 17 neighbor cells are serialized as telemetry
+	  metrics (_loc_mcc, _loc_mnc, _loc_cell_id, _loc_tac, _loc_earfcn,
+	  _loc_rsrp, _loc_timing_adv, _loc_neighbors) and queued for the next
+	  regular telemetry publish.
+	  The cloud Lambda resolves the cell data to coordinates using HERE /
+	  Combain or another positioning API and stores the result in AWS
+	  Location Tracker.
+	  No positioning solver runs on the device — firmware stays thin and
+	  solver-agnostic.
+
+config CELL_LOCATION_INTERVAL_SEC
+	int "Cell location measurement interval (seconds)"
+	default 28800
+	range 60 604800
+	depends on CELL_LOCATION
+	help
+	  How often to trigger an AT%NCELLMEAS measurement, in seconds.
+	  This is independent from the telemetry publish interval so you can
+	  publish telemetry frequently while solving location only a few times
+	  per day — keeping HERE / AWS Location API costs minimal.
+
+	  Recommended values:
+	    28800  (8 hours)  — 3 fixes/day; typical production field tracking
+	    14400  (4 hours)  — 6 fixes/day; moderate tracking
+	    3600   (1 hour)   — 24 fixes/day; high-frequency tracking
+	    60     (1 min)    — development / pipeline testing only
+
+	  Cost guide (HERE Base Plan, 3 fixes/device/day):
+	    10 devices  →   ~900 requests/month  — within free tier
+	    100 devices →  ~9,000 requests/month — ~$9/month
+	    1,000 devices → ~90,000 requests/month — negotiate volume agreement
+
+	  The measurement takes 1–5 seconds and keeps the radio active, so
+	  avoid calling it more than needed on battery-powered devices.
+
+endmenu # Cellular Location
+
 endif # CONEXIO_CLOUD

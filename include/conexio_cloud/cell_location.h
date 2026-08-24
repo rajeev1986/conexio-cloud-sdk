@@ -11,7 +11,7 @@
  * │  ──────                 ─────────────             ────────────         │
  * │  AT%NCELLMEAS           receive telemetry         Tracker resource     │
  * │    → serving cell   ──► _loc_mcc, _loc_mnc    ──► BatchUpdateDevice   │
- * │    → N neighbors        _loc_cell_id, _loc_tac    Position             │
+ * │    → N neighbours       _loc_cell_id, _loc_tac    Position             │
  * │    → RSRP / earfcn      _loc_rsrp                                     │
  * │                         _loc_neighbors (JSON)                          │
  * │                         call HERE / Combain API                        │
@@ -27,17 +27,24 @@
  * No positioning solver runs on the device — the Lambda handles that.
  * This keeps the firmware simple and solver-agnostic.
  *
+ * The measurement interval is controlled by CONFIG_CELL_LOCATION_INTERVAL_SEC
+ * (default 28800 s = 8 hours). This is independent from the telemetry publish
+ * interval so you can publish telemetry frequently while only resolving
+ * location a few times per day, keeping API costs minimal.
+ *
  * Usage:
- *   // Call once after LTE is connected and before main loop
+ *   #include <conexio_cloud/cell_location.h>
+ *
+ *   // Call once after LTE is connected (after conexio_cloud_init returns)
  *   cell_location_init();
  *
- *   // Call whenever you want a location fix (e.g. on a timer, on demand)
- *   cell_location_request();
- *   // Metrics are queued automatically — next telemetry publish sends them
+ *   // The SDK calls cell_location_tick() from its background loop.
+ *   // You do not need to call cell_location_request() manually unless
+ *   // you want an on-demand fix (e.g. on a button press or geofence event).
  */
 
-#ifndef CELL_LOCATION_H_
-#define CELL_LOCATION_H_
+#ifndef CONEXIO_CLOUD_CELL_LOCATION_H_
+#define CONEXIO_CLOUD_CELL_LOCATION_H_
 
 #include <stdbool.h>
 
@@ -52,28 +59,42 @@ extern "C" {
  * LTE_LC_EVT_NEIGHBOR_CELL_MEAS results. Must be called after LTE is
  * connected (after conexio_cloud_init() returns).
  *
+ * Safe to call multiple times — subsequent calls are no-ops.
+ *
  * @return 0 on success, negative errno on failure.
  */
 int cell_location_init(void);
 
 /**
- * @brief Request a neighbor cell measurement.
+ * @brief Request a neighbour cell measurement immediately.
  *
  * Triggers AT%NCELLMEAS. The result arrives asynchronously via
  * LTE_LC_EVT_NEIGHBOR_CELL_MEAS and is automatically queued as telemetry
  * metrics via conexio_cloud_send_metric().
  *
- * Non-blocking — returns immediately. The metrics will appear in the next
+ * Non-blocking — returns immediately. The metrics appear in the next
  * telemetry publish after the measurement completes (~1–5 seconds).
  *
- * Safe to call from any thread context.
+ * The SDK calls this automatically at the rate set by
+ * CONFIG_CELL_LOCATION_INTERVAL_SEC. Call it directly only when you need
+ * an on-demand fix outside the regular schedule.
  *
- * @return 0 on success, negative errno if measurement could not be started.
+ * @return 0 on success, -EBUSY if a measurement is already in progress,
+ *         negative errno on other errors.
  */
 int cell_location_request(void);
 
 /**
- * @brief Returns true if a neighbor cell measurement is currently in progress.
+ * @brief Interval tick — called by the SDK background loop every second.
+ *
+ * Drives the CONFIG_CELL_LOCATION_INTERVAL_SEC countdown and fires
+ * cell_location_request() when the interval expires. You do not need to
+ * call this directly; the SDK calls it automatically.
+ */
+void cell_location_tick(void);
+
+/**
+ * @brief Returns true if a neighbour cell measurement is currently in progress.
  */
 bool cell_location_is_busy(void);
 
@@ -81,4 +102,4 @@ bool cell_location_is_busy(void);
 }
 #endif
 
-#endif /* CELL_LOCATION_H_ */
+#endif /* CONEXIO_CLOUD_CELL_LOCATION_H_ */
