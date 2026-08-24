@@ -203,14 +203,8 @@ int cell_location_init(void)
         return 0;
     }
 
-    /* Register as an additional LTE LC event handler.
-     * lte_lc_register_handler() supports multiple handlers — it won't
-     * conflict with the SDK's own handler in power_mgr.c. */
-    int ret = lte_lc_register_handler(lte_lc_evt_handler);
-    if (ret) {
-        LOG_ERR("cell_location: lte_lc_register_handler failed (%d)", ret);
-        return ret;
-    }
+    /* lte_lc_register_handler() returns void in NCS v3.2.1 — no return value. */
+    lte_lc_register_handler(lte_lc_evt_handler);
 
     g_initialised = true;
     LOG_INF("cell_location: initialised — ready to request measurements");
