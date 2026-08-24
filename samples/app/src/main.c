@@ -46,6 +46,11 @@
 /* nPM1300 fuel gauge — battery voltage and state-of-charge */
 #include "fuel_gauge.h"
 
+/* Cellular location — collects AT%NCELLMEAS data for AWS Location Service */
+#if defined(CONFIG_CELL_LOCATION)
+#include "cell_location.h"
+#endif
+
 LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
 
 /* ── Application state ────────────────────────────────────────────────── */
@@ -466,6 +471,18 @@ int main(void)
         LOG_WRN("MQTT connect timeout — skipping boot publish");
     }
 
+#if defined(CONFIG_CELL_LOCATION)
+    /* ── Cellular location init ───────────────────────────────────────
+     * Registers the LTE LC event handler for AT%NCELLMEAS results.
+     * Must run after LTE is connected (after conexio_cloud_init).
+     * Trigger an immediate location fix on boot so the first telemetry
+     * publish already carries cell data for the AWS Location Lambda.  */
+    if (cell_location_init() == 0) {
+        LOG_INF("Requesting initial cell location fix...");
+        cell_location_request();
+    }
+#endif
+
     /* ── Main loop ────────────────────────────────────────────────────
      * The SDK background thread handles publishing, PSM, offline
      * buffering, reconnects, and FOTA. This loop just keeps main()
@@ -476,8 +493,23 @@ int main(void)
      * the full current interval (which could be hours for low-power
      * devices). The background thread does the actual rate control —
      * this sleep is just to keep main() from spinning.               */
+    uint32_t loop_count = 0;
     while (1) {
         k_sleep(K_SECONDS(5));
+        loop_count++;
+
+#if defined(CONFIG_CELL_LOCATION)
+        /* Request a new cell measurement once per telemetry interval.
+         * CONFIG_CONEXIO_CLOUD_INTERVAL_SEC / 5s poll = wake cycles per interval.
+         * Example: 60s interval → request every 12th wake (60/5 = 12).
+         * cell_location_is_busy() prevents stacking concurrent requests.  */
+        uint32_t cycles_per_interval = MAX(1, CONFIG_CONEXIO_CLOUD_INTERVAL_SEC / 5);
+        if ((loop_count % cycles_per_interval) == 0) {
+            if (!cell_location_is_busy()) {
+                cell_location_request();
+            }
+        }
+#endif
     }
 
     return 0;

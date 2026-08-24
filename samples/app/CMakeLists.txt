@@ -20,6 +20,14 @@ target_include_directories(app PRIVATE
 # to be on the same search path as fuel_gauge.c — no extra include dir needed.
 target_sources(app PRIVATE src/fuel_gauge.c)
 
+# ── Cellular location (AWS Location Service) ──────────────────────────────────
+# Collects AT%NCELLMEAS data and publishes it as telemetry metrics.
+# The cloud Lambda resolves cell data to coordinates and updates the
+# AWS Location Tracker. Enabled via CONFIG_CELL_LOCATION=y in prj.conf.
+if(CONFIG_CELL_LOCATION)
+  target_sources(app PRIVATE src/cell_location.c)
+endif()
+
 # ── Embed AWS Root CA as a binary include ─────────────────────────────────────
 set(CERT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/certs)
 
