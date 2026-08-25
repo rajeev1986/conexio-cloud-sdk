@@ -16,4 +16,21 @@ config CONEXIO_SAMPLE_SIMULATED_SENSORS
 	  and implement the real sensor reads in main.c before deploying
 	  to production hardware.
 
+config CELL_LOCATION
+	bool "Enable cellular location for AWS Location Service"
+	default n
+	select LTE_LC_NEIGHBOR_CELL_MEAS_MODULE
+	help
+	  Enables AT%NCELLMEAS neighbor cell measurement and publishes the
+	  results as telemetry metrics (_loc_mcc, _loc_mnc, _loc_cell_id,
+	  _loc_tac, _loc_earfcn, _loc_rsrp, _loc_timing_adv, _loc_neighbors).
+
+	  The cloud Lambda uses these metrics to call a positioning solver
+	  (HERE / Combain) and update an AWS Location Tracker resource.
+	  No positioning runs on the device — the firmware only collects
+	  raw cell data.
+
+	  Requires LTE_LC_NEIGHBOR_CELL_MEAS_MODULE (auto-selected).
+	  Add CONFIG_CELL_LOCATION=y to prj.conf to enable.
+
 source "Kconfig.zephyr"

@@ -47,4 +47,11 @@ if(CONFIG_CONEXIO_CLOUD)
     target_sources(app PRIVATE src/retry.c)
   endif()
 
+  # ── Cellular location — AT%NCELLMEAS → AWS Location Service ─────────────────
+  # Enable with CONFIG_CELL_LOCATION=y in prj.conf.
+  # Measurement interval controlled by CONFIG_CELL_LOCATION_INTERVAL_SEC.
+  if(CONFIG_CELL_LOCATION)
+    target_sources(app PRIVATE src/cell_location.c)
+  endif()
+
 endif()
