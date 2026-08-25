@@ -255,9 +255,10 @@ int cell_location_init(void)
 
 	g_initialised = true;
 
-	LOG_INF("cell_location: initialised — interval %d s "
-		"(CONFIG_CELL_LOCATION_INTERVAL_SEC)",
-		CONFIG_CELL_LOCATION_INTERVAL_SEC);
+	LOG_INF("cell_location: initialised — interval %d s, search type %d "
+		"(0=default 1=ext_light 2=extended)",
+		CONFIG_CELL_LOCATION_INTERVAL_SEC,
+		CONFIG_CELL_LOCATION_SEARCH_TYPE);
 	return 0;
 }
 
@@ -274,7 +275,7 @@ int cell_location_request(void)
 	}
 
 	struct lte_lc_ncellmeas_params params = {
-		.search_type = LTE_LC_NEIGHBOR_SEARCH_TYPE_DEFAULT,
+		.search_type = (enum lte_lc_neighbor_search_type)CONFIG_CELL_LOCATION_SEARCH_TYPE,
 		.gci_count   = 0,
 	};
 

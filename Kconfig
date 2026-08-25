@@ -560,6 +560,26 @@ config CELL_LOCATION_PUBLISH_ON_FIX
 	  Disable if you prefer location metrics to ride the next regular
 	  telemetry publish (e.g. to batch location with other sensor data).
 
+config CELL_LOCATION_SEARCH_TYPE
+	int "Neighbour cell search type (LTE_LC_NEIGHBOR_SEARCH_TYPE_*)"
+	default 1
+	range 0 2
+	depends on CELL_LOCATION
+	help
+	  Controls the AT%NCELLMEAS search mode passed to
+	  lte_lc_neighbor_cell_measurement():
+
+	    0 = DEFAULT        — fast (~1–3 s), reports 0–2 neighbours.
+	                         Accuracy typically ±1–5 km.
+	    1 = EXTENDED_LIGHT — moderate (~3–8 s), reports 3–8 neighbours.
+	                         Accuracy typically ±300 m–1 km. (default)
+	    2 = EXTENDED       — thorough (~5–15 s), reports up to 17 neighbours.
+	                         Best accuracy but highest power and time cost.
+
+	  At an 8-hour location interval the extra scan time is negligible.
+	  Start with EXTENDED_LIGHT (1) and only move to EXTENDED (2) if you
+	  need better accuracy and the longer scan time is acceptable.
+
 endmenu # Cellular Location
 
 endif # CONEXIO_CLOUD
