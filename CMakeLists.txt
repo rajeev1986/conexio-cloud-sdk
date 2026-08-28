@@ -54,4 +54,10 @@ if(CONFIG_CONEXIO_CLOUD)
     target_sources(app PRIVATE src/cell_location.c)
   endif()
 
+  # ── Log streaming — Zephyr log backend → cloud telemetry "_log" array ────────
+  # Enable with CONFIG_CONEXIO_CLOUD_LOG_STREAM=y in prj.conf.
+  if(CONFIG_CONEXIO_CLOUD_LOG_STREAM)
+    target_sources(app PRIVATE src/log_stream.c)
+  endif()
+
 endif()

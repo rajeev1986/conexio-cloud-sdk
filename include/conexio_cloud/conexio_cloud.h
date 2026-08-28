@@ -389,7 +389,7 @@ double conexio_cloud_get_last_battery_mv(void);
  * LOG_INF("App v%s | Conexio SDK v" CONEXIO_CLOUD_VERSION, APP_VERSION_STRING);
  * @endcode
  */
-#define CONEXIO_CLOUD_VERSION "2.1.0"
+#define CONEXIO_CLOUD_VERSION "2.2.0"
 
 /* ── SDK status ──────────────────────────────────────────────────────────── */
 
@@ -479,8 +479,29 @@ void conexio_cloud_register_interval(int min_sec, int max_sec);
 #if defined(CONFIG_CONEXIO_CLOUD_FOTA)
 #include <fota.h>
 void conexio_cloud_set_fota_cb(fota_event_cb_t cb);
-#endif
 
+/**
+ * @brief Register a callback that gates whether a FOTA download may start.
+ *
+ * Forwards to fota_set_can_start_cb(). Call this before conexio_cloud_init()
+ * to implement a maintenance window — the FOTA module will not start a
+ * download until the callback returns true.
+ *
+ * Example — defer updates while a motor is running:
+ * @code
+ * static bool safe_to_update(void) { return !motor_is_running(); }
+ * conexio_cloud_set_fota_can_start_cb(safe_to_update);
+ * @endcode
+ *
+ * Pass NULL to remove a previously registered callback (always allow).
+ *
+ * Only available when CONFIG_CONEXIO_CLOUD_FOTA=y.
+ */
+static inline void conexio_cloud_set_fota_can_start_cb(fota_can_start_cb_t cb)
+{
+    fota_set_can_start_cb(cb);
+}
+#endif
 /* ── Schedule watchdog ───────────────────────────────────────────────────── */
 
 /**

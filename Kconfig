@@ -343,7 +343,83 @@ config CONEXIO_CLOUD_FOTA_DOWNLOAD_TIMEOUT_SEC
 	  600s (10 min) is the maximum — beyond this a stuck download drains the
 	  battery without benefit. Typical download time is under 2 minutes on NB-IoT.
 
+config FOTA_PAUSE_RETRY_SEC
+	int "FOTA maintenance window retry interval (seconds)"
+	default 60
+	range 5 3600
+	depends on CONEXIO_CLOUD_FOTA
+	help
+	  When a can_start callback is registered via fota_set_can_start_cb()
+	  and it returns false (device not in a safe state), the FOTA module
+	  waits this many seconds before checking again.
+	  Default: 60 s — check once per minute whether the maintenance window
+	  has opened. Set lower (e.g. 5) for faster response in testing, or
+	  higher (e.g. 300) for infrequent checks on battery-constrained devices.
+
 endmenu # FOTA
+
+# ── Log streaming — forward Zephyr log messages to the cloud ─────────────────
+
+menu "Log Streaming"
+
+config CONEXIO_CLOUD_LOG_STREAM
+	bool "Forward Zephyr log messages to the cloud"
+	default n
+	help
+	  Registers a Zephyr log backend that captures LOG_INF/WRN/ERR calls
+	  from the firmware and stores them in a RAM ring buffer. The buffer is
+	  drained onto each telemetry publish as a "_log" JSON array:
+
+	    "_log": [
+	      {"l":"WRN","m":"cell_location","s":"meas failed"},
+	      {"l":"ERR","m":"fota","s":"download timeout"}
+	    ]
+
+	  Key abbreviations: l=level, m=module, s=string (message).
+	  Entries ride the regular telemetry payload — no extra MQTT publish.
+	  When the buffer is full, oldest entries are silently dropped.
+
+	  Useful for field diagnostics — see firmware log lines in the Conexio
+	  Console alongside telemetry without a serial cable.
+
+	  Enable with CONFIG_CONEXIO_CLOUD_LOG_STREAM=y in prj.conf.
+
+config CONEXIO_CLOUD_LOG_LEVEL
+	int "Minimum log level to forward (0=DBG 1=INF 2=WRN 3=ERR)"
+	default 2
+	range 0 3
+	depends on CONEXIO_CLOUD_LOG_STREAM
+	help
+	  Controls which log levels are captured and forwarded.
+	    0 = DEBUG   — all messages (very verbose, large payloads)
+	    1 = INFO    — informational + warnings + errors
+	    2 = WARNING — warnings and errors only (default, low overhead)
+	    3 = ERROR   — errors only (minimal data usage)
+	  Recommended: 2 (WRN) for production, 1 (INF) for field debugging.
+
+config CONEXIO_CLOUD_LOG_QUEUE_SIZE
+	int "Log ring buffer depth (number of entries)"
+	default 16
+	range 4 64
+	depends on CONEXIO_CLOUD_LOG_STREAM
+	help
+	  Maximum number of log entries buffered between publishes. When full,
+	  the oldest entry is silently overwritten (ring buffer semantics).
+	  At a 60-second publish interval, 16 entries is enough for typical
+	  warning/error rates. Increase for verbose INFO logging or slow intervals.
+
+config CONEXIO_LOG_MSG_LEN
+	int "Maximum characters per log message"
+	default 80
+	range 32 200
+	depends on CONEXIO_CLOUD_LOG_STREAM
+	help
+	  Each log message is truncated to this length before being stored
+	  in the ring buffer. Shorter messages save RAM (ring buffer is
+	  QUEUE_SIZE × (MSG_LEN + 16 + 4) bytes).
+	  80 chars covers most meaningful log lines while keeping RAM usage low.
+
+endmenu # Log Streaming
 
 # ── Offline buffer — flash-backed telemetry buffering ────────────────────────
 

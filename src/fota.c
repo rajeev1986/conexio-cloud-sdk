@@ -26,6 +26,15 @@
 #include "fota.h"
 #include "transport.h"     /* transport_publish_raw() */
 
+/* App firmware version — needed to persist installed version in fota_confirm().
+ * Falls back to "unknown" if the application has no VERSION file. */
+#if __has_include(<app_version.h>)
+#  include <app_version.h>
+#  define CONEXIO_APP_FW_VERSION APP_VERSION_STRING
+#else
+#  define CONEXIO_APP_FW_VERSION "unknown"
+#endif
+
 LOG_MODULE_REGISTER(fota, LOG_LEVEL_INF);
 
 /*
@@ -43,6 +52,18 @@ static fota_event_cb_t  g_cb            = NULL;
 static bool             g_fota_active   = false;
 static char             g_device_id[32] = {0};
 static char             g_current_job_id[64] = {0};
+
+/* ── Maintenance window / pause callback ──────────────────────────────────
+ * When set, execute_job() waits until this returns true before starting
+ * the download. Retried every CONFIG_FOTA_PAUSE_RETRY_SEC seconds.
+ */
+static fota_can_start_cb_t g_can_start_cb = NULL;
+
+void fota_set_can_start_cb(fota_can_start_cb_t cb)
+{
+    g_can_start_cb = cb;
+    LOG_INF("FOTA: can_start callback %s", cb ? "registered" : "cleared");
+}
 
 /* ── NVS: persist pending SUCCEEDED publish across reboot ─────────────────── */
 /*
@@ -64,6 +85,13 @@ static char             g_current_job_id[64] = {0};
  */
 #define FOTA_PENDING_NVS_ID  0x0005U
 #define FOTA_PENDING_MAX     98U    /* device_id(31) + '\n'(1) + job_id(63) + '\0'(1) + margin */
+
+/* NVS key 0x0006 — stores the last successfully installed firmware version.
+ * Written by fota_confirm() after MCUboot confirmation. Read by execute_job()
+ * to skip the download when the requested version is already installed.
+ * Prevents re-downloading a binary the device already runs (idempotency). */
+#define FOTA_INSTALLED_VER_NVS_ID  0x0006U
+#define FOTA_INSTALLED_VER_MAX     32U   /* matches APP_VERSION_STRING max */
 
 #define NVS_PARTITION        storage_partition
 #define NVS_PARTITION_DEVICE FIXED_PARTITION_DEVICE(NVS_PARTITION)
@@ -317,6 +345,28 @@ static int execute_job(const char *job_id, const char *job_document)
     LOG_INF("FOTA job: version=%s", version ? version : "unknown");
     LOG_INF("Download URL: %s", url);
 
+    /* ── Idempotency check ────────────────────────────────────────────────
+     * If the requested firmware version matches what is already installed
+     * (persisted by fota_confirm() in a previous boot), skip the download
+     * and immediately publish SUCCEEDED. This prevents re-flashing a device
+     * that already runs the target version — common when a job is re-queued
+     * after a fleet-wide rollout or when the device restarts mid-job.
+     */
+    if (version && version[0] != '\0' && fota_nvs_init() == 0) {
+        char installed[FOTA_INSTALLED_VER_MAX] = {0};
+        ssize_t rc = nvs_read(&g_fota_nvs, FOTA_INSTALLED_VER_NVS_ID,
+                              installed, sizeof(installed));
+        if (rc > 0 && strncmp(installed, version, FOTA_INSTALLED_VER_MAX) == 0) {
+            LOG_INF("FOTA: version %s already installed — skipping download, "
+                    "publishing SUCCEEDED", version);
+            /* Publish SUCCEEDED directly — no download needed */
+            strncpy(g_current_job_id, job_id, sizeof(g_current_job_id) - 1);
+            job_status_publish("SUCCEEDED", NULL, NULL, -1);
+            cJSON_Delete(doc);
+            return 0;
+        }
+    }
+
     strncpy(g_current_job_id, job_id, sizeof(g_current_job_id) - 1);
     g_fota_active = true;
 
@@ -415,6 +465,27 @@ static int execute_job(const char *job_id, const char *job_document)
 
     LOG_DBG("FOTA host: %s", g_host_buf);
     LOG_DBG("FOTA file: %.80s...", g_file_buf);
+
+    /* ── Maintenance window check ─────────────────────────────────────────
+     * If the application registered a can_start callback, poll it before
+     * starting the download. Retry every CONFIG_FOTA_PAUSE_RETRY_SEC
+     * seconds until it returns true. This lets the app defer the update
+     * to a safe window (e.g. not while a motor is running).
+     */
+    if (g_can_start_cb != NULL) {
+        int wait_total = 0;
+        while (!g_can_start_cb()) {
+            LOG_INF("FOTA: deferred by can_start callback — retrying in %ds "
+                    "(waited %ds total)",
+                    CONFIG_FOTA_PAUSE_RETRY_SEC, wait_total);
+            k_sleep(K_SECONDS(CONFIG_FOTA_PAUSE_RETRY_SEC));
+            wait_total += CONFIG_FOTA_PAUSE_RETRY_SEC;
+        }
+        if (wait_total > 0) {
+            LOG_INF("FOTA: maintenance window cleared after %ds — starting download",
+                    wait_total);
+        }
+    }
 
     int ret = fota_download_start(g_host_buf, g_file_buf,
                                   CONFIG_CONEXIO_CLOUD_CA_TAG,
@@ -529,6 +600,20 @@ void fota_confirm(void)
         LOG_WRN("boot_write_img_confirmed failed (%d)", ret);
     } else {
         LOG_INF("Firmware image confirmed (MCUboot rollback prevention)");
+
+        /* ── Persist installed version ────────────────────────────────────
+         * Write the current firmware version to NVS so execute_job() can
+         * skip re-downloading a binary we already run (idempotency check).
+         * CONEXIO_APP_FW_VERSION comes from the application's VERSION file
+         * (e.g. "1.0.5") — it is always accurate after a confirmed boot.
+         */
+        if (fota_nvs_init() == 0) {
+            const char *ver = CONEXIO_APP_FW_VERSION;
+            nvs_write(&g_fota_nvs, FOTA_INSTALLED_VER_NVS_ID,
+                      ver, (uint16_t)(strlen(ver) + 1));
+            LOG_INF("FOTA: installed version saved to NVS: %s", ver);
+        }
+
         /* g_current_job_id is empty here (new firmware, RAM cleared after reboot).
          * The job ID was persisted to NVS in FOTA_DOWNLOAD_EVT_FINISHED on the old
          * firmware. fota_check_and_execute() will publish SUCCEEDED when MQTT connects. */

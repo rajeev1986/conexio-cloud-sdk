@@ -71,6 +71,33 @@ void fota_confirm(void);
 bool fota_is_active(void);
 
 /**
+ * @brief Register a callback that gates whether a FOTA download may start.
+ *
+ * When set, the SDK calls this function before starting any firmware download.
+ * Return false to defer the update — the SDK will retry every
+ * CONFIG_FOTA_PAUSE_RETRY_SEC seconds until the callback returns true.
+ *
+ * Use this to implement a maintenance window: defer updates while a motor
+ * is running, a sensor measurement is in progress, or the device is in a
+ * safety-critical state.
+ *
+ * Example:
+ * @code
+ * static bool safe_to_update(void) {
+ *     return !motor_is_running() && !measurement_in_progress();
+ * }
+ * fota_set_can_start_cb(safe_to_update);
+ * @endcode
+ *
+ * Pass NULL to remove a previously registered callback (always allow).
+ *
+ * @param cb  Callback returning true when it is safe to start the download,
+ *            or NULL to always allow immediately.
+ */
+typedef bool (*fota_can_start_cb_t)(void);
+void fota_set_can_start_cb(fota_can_start_cb_t cb);
+
+/**
  * @brief Handle a FIRMWARE_UPDATE command from the cloud command queue.
  * Parses the job ID and document and starts the FOTA download.
  * @param job_id       The IoT Job ID string.

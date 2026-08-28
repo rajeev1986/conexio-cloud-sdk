@@ -88,6 +88,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/random/random.h>     /* sys_rand32_get() for session run ID */
 #include <string.h>
 #include <stdio.h>
 #include <inttypes.h>                 /* PRId64 for schedule watchdog logs  */
@@ -131,13 +132,32 @@
 #include <zephyr/dfu/mcuboot.h>   /* boot_is_img_confirmed */
 #include <zephyr/sys/reboot.h>
 #endif
+#if defined(CONFIG_CONEXIO_CLOUD_LOG_STREAM)
+#include "log_stream.h"
+#endif
 
 /* SDK semantic version — reported in every telemetry payload as _sdk_version */
-#define CONEXIO_SDK_VERSION "2.1.0"
+#define CONEXIO_SDK_VERSION "2.2.0"
 
 LOG_MODULE_REGISTER(conexio_cloud, LOG_LEVEL_INF);
 
 /* ── SDK connection status ────────────────────────────────────────────────── */
+/* ── Session Run ID ───────────────────────────────────────────────────────────
+ * Generated once at boot from a hardware RNG. Included in every telemetry
+ * payload as _session_id so the cloud can group all data from one power-on
+ * session, correlate reconnects, and distinguish "device rebooted" from
+ * "device just moved cells". Lighter than the NVS-backed reboot counter for
+ * per-session correlation. Format: 8 hex chars (32-bit random value).
+ */
+/* ── Session Run ID ───────────────────────────────────────────────────────────
+ * Generated once at boot from a hardware RNG. Included in every telemetry
+ * payload as _session_id so the cloud can group all data from one power-on
+ * session and correlate reconnects across MQTT disconnects. Lighter than the
+ * NVS-backed reboot counter for per-session correlation — no flash write needed.
+ * Format: 8 lowercase hex chars representing a 32-bit random value.
+ */
+static char g_session_id[9] = {0};   /* "aabbccdd\0" — filled in init */
+
 static enum conexio_cloud_status g_sdk_status = CONEXIO_CLOUD_STATUS_INIT;
 static K_SEM_DEFINE(g_connected_sem, 0, 1);  /* given on MQTT CONNACK */
 
@@ -529,6 +549,13 @@ static void reboot_counter_init(void)
 #if defined(CONFIG_NVS)
     g_reboot_cnt = load_and_increment_reboot_count();
     LOG_INF("Reboot counter: %u (persisted in NVS)", g_reboot_cnt);
+
+    /* ── Session Run ID ────────────────────────────────────────────────────
+     * Generate a random 32-bit value using the hardware RNG. Formatted as
+     * 8 lowercase hex chars. Different on every boot — no NVS write needed.
+     */
+    snprintf(g_session_id, sizeof(g_session_id), "%08x", sys_rand32_get());
+    LOG_INF("Session ID: %s", g_session_id);
 #else
     g_reboot_cnt = 0;
     LOG_DBG("Reboot counter: 0 (NVS disabled — not persistent)");
@@ -1768,6 +1795,12 @@ skip_modem_metrics:;  /* jump target if modem_info_params_get fails */
          * Distinct from _sdk_version (Conexio SDK library version).
          * Tracked by the cloud and displayed in Fleet Health → Device Identity. */
         cJSON_AddStringToObject(metrics, "_app_fw_version", CONEXIO_APP_FW_VERSION);
+        /* _session_id — random 32-bit hex, unique per power-on session.
+         * Lets the cloud correlate all packets from one boot across MQTT
+         * reconnects without a flash write. Generated in conexio_cloud_init(). */
+        if (g_session_id[0] != '\0') {
+            cJSON_AddStringToObject(metrics, "_session_id", g_session_id);
+        }
     }
 
     /* _operator: boot-once but retried until modem has attached */
@@ -1783,28 +1816,69 @@ skip_modem_metrics:;  /* jump target if modem_info_params_get fails */
         }
     }
 
-    /* ── SLOW metrics (every N publishes) ─────────────────────────────── */
-    if (emit_slow) {
+    /* ── SLOW / delta metrics ─────────────────────────────────────────────
+     *
+     * _lte_band, _cell_id, _tac change only on cell handover or band
+     * reselection — rare events for a stationary device. Sending them on
+     * every publish wastes data for no benefit.
+     *
+     * Strategy (delta encoding):
+     *   - Always send on boot (emit_boot) so the cloud has the initial value.
+     *   - Send on every slow_interval tick as a heartbeat (cloud confirmation).
+     *   - Also send immediately when the value changes, regardless of the timer,
+     *     so cell handovers are captured in real time.
+     *
+     * Previous values are stored in persistent statics. On first call they are
+     * set to SENTINEL values so the first publish always triggers a send.
+     */
+    {
+        static uint8_t  s_prev_band    = 0xFF;         /* BAND_UNAVAILABLE sentinel */
+        static uint32_t s_prev_cell_id = 0xFFFFFFFF;   /* LTE_LC_CELL_EUTRAN_ID_INVALID */
+        static uint16_t s_prev_tac     = 0xFFFF;       /* TAC invalid sentinel */
+
         const struct conexio_lte_session_metrics *lm_slow =
             conexio_lte_get_session_metrics();
 
-        /* _lte_band — changes only on cell handover or band reselection */
+        /* _lte_band */
         {
             uint8_t band = 0;
-            if (modem_info_get_current_band(&band) == 0
-                && band != BAND_UNAVAILABLE) {
-                cJSON_AddNumberToObject(metrics, "_lte_band", (double)band);
+            if (modem_info_get_current_band(&band) == 0 && band != BAND_UNAVAILABLE) {
+                bool changed = (band != s_prev_band);
+                if (emit_boot || emit_slow || changed) {
+                    cJSON_AddNumberToObject(metrics, "_lte_band", (double)band);
+                    if (changed) {
+                        LOG_INF("Delta: _lte_band %u → %u", s_prev_band, band);
+                    }
+                    s_prev_band = band;
+                }
             }
         }
 
-        /* _cell_id / _tac — change when device moves between cells */
+        /* _cell_id */
         if (lm_slow->cell_id != 0xFFFFFFFF) {
-            cJSON_AddNumberToObject(metrics, "_cell_id",
-                                    (double)lm_slow->cell_id);
+            bool changed = (lm_slow->cell_id != (uint32_t)s_prev_cell_id);
+            if (emit_boot || emit_slow || changed) {
+                cJSON_AddNumberToObject(metrics, "_cell_id",
+                                        (double)lm_slow->cell_id);
+                if (changed) {
+                    LOG_INF("Delta: _cell_id %u → %u",
+                            s_prev_cell_id, lm_slow->cell_id);
+                }
+                s_prev_cell_id = lm_slow->cell_id;
+            }
         }
+
+        /* _tac */
         if (lm_slow->tac != 0xFFFFFFFF) {
-            cJSON_AddNumberToObject(metrics, "_tac",
-                                    (double)lm_slow->tac);
+            uint16_t tac = (uint16_t)lm_slow->tac;
+            bool changed = (tac != s_prev_tac);
+            if (emit_boot || emit_slow || changed) {
+                cJSON_AddNumberToObject(metrics, "_tac", (double)tac);
+                if (changed) {
+                    LOG_INF("Delta: _tac %u → %u", s_prev_tac, tac);
+                }
+                s_prev_tac = tac;
+            }
         }
     }
 
@@ -1928,6 +2002,14 @@ skip_modem_metrics:;  /* jump target if modem_info_params_get fails */
         metric_queue[i].used = false;
     }
     k_mutex_unlock(&queue_mutex);
+
+#if defined(CONFIG_CONEXIO_CLOUD_LOG_STREAM)
+    /* ── Cloud log stream ─────────────────────────────────────────────────
+     * Drain any buffered log entries into a "_log" array on the metrics
+     * object. Entries ride the regular telemetry publish — no extra MQTT
+     * message. The array is omitted entirely when the buffer is empty.    */
+    log_stream_drain(metrics);
+#endif
 
     /* Serialise to a compact (no whitespace) JSON string.
      * cJSON_PrintUnformatted allocates from the heap — caller must free. */
