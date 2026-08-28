@@ -52,7 +52,7 @@ static struct log_entry g_ring[QUEUE_SIZE];
 static uint16_t g_head  = 0;
 static uint16_t g_tail  = 0;
 static uint16_t g_count = 0;
-static K_SPINLOCK_DEFINE(g_lock);
+static struct k_spinlock g_lock;
 static bool g_panic_mode = false;
 
 static void ring_push(uint8_t level, const char *module, const char *msg)
