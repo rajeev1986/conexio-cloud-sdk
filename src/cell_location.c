@@ -45,6 +45,7 @@
 #include <string.h>
 #include <conexio_cloud/conexio_cloud.h>
 #include <conexio_cloud/cell_location.h>
+#include "transport.h"   /* conexio_cloud_publish_single(), TOPIC_CAT_LOCATION */
 
 LOG_MODULE_REGISTER(cell_location, LOG_LEVEL_INF);
 
@@ -66,10 +67,13 @@ static uint32_t g_tick_counter       = 0;   /* seconds since last measurement */
 static void publish_work_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
-	LOG_INF("cell_location: triggering immediate publish with location metrics");
-	int ret = conexio_cloud_publish();
+	LOG_INF("cell_location: publishing location fix (location topic only)");
+	/* Publish ONLY the location category — not all 4 topics.
+	 * Calling conexio_cloud_publish() here would re-send diagnostics and
+	 * telemetry, causing duplicate boot-once metrics on the first fix. */
+	int ret = conexio_cloud_publish_single(TOPIC_CAT_LOCATION);
 	if (ret) {
-		LOG_WRN("cell_location: immediate publish failed (%d) — "
+		LOG_WRN("cell_location: location publish failed (%d) — "
 			"metrics will ride next scheduled interval", ret);
 	}
 }

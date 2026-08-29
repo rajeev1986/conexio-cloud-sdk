@@ -38,6 +38,12 @@
  * the new location data right away rather than waiting hours for the next
  * scheduled publish interval.
  *
+ * NOTE: Do NOT call cell_location_request() immediately after boot. The boot
+ * publish fires first and the location k_work would trigger a second publish
+ * within milliseconds, duplicating diagnostics and telemetry. Let
+ * cell_location_tick() fire the first measurement after the configured
+ * interval instead.
+ *
  * Usage:
  *   #include <conexio_cloud/cell_location.h>
  *

@@ -2753,6 +2753,47 @@ int conexio_cloud_send_metric_bool(const char *name, bool value)
  * Returns -ENOTCONN if not connected (metrics remain in the queue for the
  * next attempt — useful with the offline buffer in sdk-sample-app-advanced).
  */
+/* ── Internal: publish a single category ─────────────────────────────────────
+ * Used by cell_location.c to publish ONLY the location topic after a fix.
+ * Avoids re-publishing diagnostics/telemetry which would duplicate boot-once
+ * metrics and cause the dashboard to show multiple diagnostics on boot.
+ */
+int conexio_cloud_publish_single(char category)
+{
+    if (!transport_is_connected()) return -ENOTCONN;
+
+    /* Check if there is anything to send for this category */
+    bool has_data = false;
+    if (category == TOPIC_CAT_DIAGNOSTICS) {
+        has_data = true;
+    } else if (category == TOPIC_CAT_LOGS) {
+#if defined(CONFIG_CONEXIO_CLOUD_LOG_STREAM)
+        has_data = (log_stream_pending() > 0);
+#endif
+    } else {
+        if (category == TOPIC_CAT_TELEMETRY && sensor_count > 0) {
+            has_data = true;
+        }
+        if (!has_data) {
+            k_mutex_lock(&queue_mutex, K_FOREVER);
+            for (int i = 0; i < CONFIG_CONEXIO_CLOUD_METRIC_QUEUE_SIZE; i++) {
+                if (metric_queue[i].used && metric_queue[i].category == category) {
+                    has_data = true;
+                    break;
+                }
+            }
+            k_mutex_unlock(&queue_mutex);
+        }
+    }
+    if (!has_data) return 0;
+
+    char *payload = build_payload_for_category(category);
+    if (!payload) return -ENOMEM;
+    int ret = transport_publish_to(category, payload, strlen(payload));
+    cJSON_free(payload);
+    return ret;
+}
+
 int conexio_cloud_publish(void)
 {
     if (!transport_is_connected()) return -ENOTCONN;

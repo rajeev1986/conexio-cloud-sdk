@@ -509,14 +509,13 @@ int main(void)
     /* ── Cellular location init ───────────────────────────────────────
      * Registers the LTE LC event handler for AT%NCELLMEAS results.
      * Must run after LTE is connected (after conexio_cloud_init).
-     * Trigger an immediate fix on boot — metrics ride the first publish.
-     * The SDK calls cell_location_tick() from the main loop every 5s
-     * to drive the CONFIG_CELL_LOCATION_INTERVAL_SEC countdown for all
-     * subsequent measurements.                                         */
-    if (cell_location_init() == 0) {
-        LOG_INF("Requesting initial cell location fix...");
-        cell_location_request();
-    }
+     *
+     * No cell_location_request() on boot — the boot publish already sent
+     * diagnostics once. The location k_work (PUBLISH_ON_FIX=y) only sends
+     * the location topic, so periodic fixes are clean. The first measurement
+     * fires automatically after CONFIG_CELL_LOCATION_INTERVAL_SEC seconds
+     * via cell_location_tick() in the main loop below.                */
+    cell_location_init();
 #endif
 
     /* ── Main loop ────────────────────────────────────────────────────

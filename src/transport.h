@@ -111,4 +111,8 @@ void transport_on_connected(void);
 void transport_on_disconnected(void);
 void transport_on_message(const char *json_str, size_t len);
 
+/* Internal: publish a single category without triggering a full 4-topic publish.
+ * Used by cell_location.c to publish only TOPIC_CAT_LOCATION after a fix. */
+int conexio_cloud_publish_single(char category);
+
 #endif /* CONEXIO_TRANSPORT_H */
