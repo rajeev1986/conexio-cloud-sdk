@@ -54,9 +54,8 @@
 LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
 
 /* ── Application state ────────────────────────────────────────────────── */
-static int  g_alert_threshold = 80;
+static int  g_alert_threshold = 80;   /* temperature alert threshold (°C) */
 static bool g_debug_mode      = false;
-
 /* ── LED GPIO ─────────────────────────────────────────────────────────── */
 /*
  * The Conexio Stratus Pro has one user-controllable LED:
@@ -121,7 +120,17 @@ static double read_temperature(void *arg)
 {
     ARG_UNUSED(arg);
     /* Simulated: random value in [22.0, 35.0] °C with 0.1 resolution */
-    return 22.0 + (double)(sys_rand32_get() % 131) * 0.1;
+    double temp = 22.0 + (double)(sys_rand32_get() % 131) * 0.1;
+
+    /* Publish an alert if the temperature exceeds the configured threshold.
+     * conexio_cloud_publish_alert() sends immediately to the dedicated
+     * v1/devices/{id}/alerts topic — separate from the regular telemetry
+     * interval — so the cloud can trigger SNS notifications in real time. */
+    if (g_alert_threshold > 0 && temp >= (double)g_alert_threshold) {
+        conexio_cloud_publish_alert("temperature", temp,
+                                    (double)g_alert_threshold);
+    }
+    return temp;
 }
 
 static double read_humidity(void *arg)
@@ -144,7 +153,12 @@ static double read_temperature(void *arg)
      *   struct sensor_value val;
      *   sensor_sample_fetch(temp_dev);
      *   sensor_channel_get(temp_dev, SENSOR_CHAN_AMBIENT_TEMP, &val);
-     *   return sensor_value_to_double(&val);
+     *   double temp = sensor_value_to_double(&val);
+     *   if (g_alert_threshold > 0 && temp >= (double)g_alert_threshold) {
+     *       conexio_cloud_publish_alert("temperature", temp,
+     *                                   (double)g_alert_threshold);
+     *   }
+     *   return temp;
      */
     return (double)NAN;
 }
@@ -433,6 +447,19 @@ int main(void)
      * even if the device loses connectivity after receiving LED_ON.   */
     conexio_cloud_register_schedule_cb(on_schedule);
 
+    /* ── Register FOTA maintenance window callback (optional) ────────────
+     * Return false to defer a firmware download until the device is in a
+     * safe state. The SDK retries every CONFIG_FOTA_PAUSE_RETRY_SEC (60s).
+     *
+     * Example: uncomment and implement safe_to_update() for your hardware:
+     *
+     *   static bool safe_to_update(void) {
+     *       return !motor_is_running() && !measurement_in_progress();
+     *   }
+     *   conexio_cloud_set_fota_can_start_cb(safe_to_update);
+     *
+     * Without this, FOTA downloads start immediately when commanded.      */
+
     /* ── nPM1300 fuel gauge init ──────────────────────────────────────────
      * Initialises the nRF Fuel Gauge library with battery model and initial
      * readings. Must happen before conexio_cloud_init() so read_battery_mv()
@@ -458,8 +485,15 @@ int main(void)
     /* ── Wait for MQTT connection then do boot publish ────────────────
      * conexio_cloud_wait_connected() blocks until MQTT CONNACK arrives
      * (or times out). Replaces the manual K_SEM_DEFINE boilerplate.
-     * Boot-once metrics (_reboot_reason, _modem_fw, etc.) are included
-     * in this first publish.                                           */
+     *
+     * conexio_cloud_publish() sends up to 4 separate MQTT messages to
+     * their dedicated versioned topics:
+     *   v1/.../diagnostics — SDK system metrics (always sent)
+     *   v1/.../telemetry   — sensor callbacks + queued app metrics
+     *   v1/.../location    — _loc_* metrics (if queued)
+     *   v1/.../logs        — log entries (if LOG_STREAM=y and pending)
+     * Boot-once metrics (_reboot_reason, _modem_fw, _session_id etc.)
+     * are included in the diagnostics message on this first publish.  */
     LOG_INF("Waiting for MQTT connection...");
     if (conexio_cloud_wait_connected(60000) == 0) {
         LOG_INF("Boot publish — sending telemetry immediately after reset");
