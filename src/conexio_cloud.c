@@ -2892,10 +2892,10 @@ int conexio_cloud_publish_alert(const char *name, double value, double threshold
         struct tm *tm_val = gmtime_r(&t, &tm_buf);
         int year = CLAMP(tm_val->tm_year + 1900, 2020, 2099); /* bound year → 4 digits */
         snprintf(timestamp, sizeof(timestamp),
-                 "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ",
+                 "%04d-%02d-%02dT%02d:%02d:%02d.%03uZ",
                  year, tm_val->tm_mon + 1, tm_val->tm_mday,
                  tm_val->tm_hour, tm_val->tm_min, tm_val->tm_sec,
-                 (int)(unix_ms % 1000));
+                 (unsigned int)(llabs(unix_ms) % 1000U));
     } else {
         strncpy(timestamp, "1970-01-01T00:00:00.000Z", sizeof(timestamp));
     }
