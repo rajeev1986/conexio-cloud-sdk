@@ -309,8 +309,46 @@ int conexio_cloud_send_metric_str(const char *name, const char *value);
 /** Queue a boolean metric. */
 int conexio_cloud_send_metric_bool(const char *name, bool value);
 
-/** Immediately publish all queued metrics. */
+/**
+ * @brief Immediately publish all queued metrics, split across versioned topics.
+ *
+ * Publishes four separate MQTT messages when there is data for each:
+ *   v1/devices/{id}/diagnostics  — SDK system metrics (_rssi, _reboot, _lte…)
+ *   v1/devices/{id}/telemetry    — registered sensor callbacks + app metrics
+ *   v1/devices/{id}/location     — queued _loc_* metrics
+ *   v1/devices/{id}/logs         — log stream entries (when LOG_STREAM=y)
+ *
+ * Categories with no pending data are skipped — no empty publish.
+ * Each message carries a per-topic sequence number for gap detection.
+ *
+ * Returns 0 if all publishes succeeded, or the last non-zero error code.
+ */
 int conexio_cloud_publish(void);
+
+/**
+ * @brief Publish an alert to the dedicated alerts topic.
+ *
+ * Use this when the application detects a threshold breach. The alert is
+ * published immediately to v1/devices/{id}/alerts (separate from telemetry)
+ * so the cloud can apply a different IoT Rule — e.g. immediate SNS
+ * notification rather than the normal DynamoDB write path.
+ *
+ * Only available when connected. Returns -ENOTCONN if not connected.
+ *
+ * Example:
+ * @code
+ * float temp = read_temperature();
+ * if (temp > TEMP_ALERT_THRESHOLD) {
+ *     conexio_cloud_publish_alert("temperature", temp, TEMP_ALERT_THRESHOLD);
+ * }
+ * @endcode
+ *
+ * @param name       Metric name that triggered the alert (e.g. "temperature").
+ * @param value      The measured value that exceeded the threshold.
+ * @param threshold  The threshold that was breached.
+ * @return 0 on success, -ENOTCONN if not connected, negative errno on error.
+ */
+int conexio_cloud_publish_alert(const char *name, double value, double threshold);
 
 /* ── Sensor registration (alternative to send_metric in a loop) ──────────── */
 
@@ -389,7 +427,7 @@ double conexio_cloud_get_last_battery_mv(void);
  * LOG_INF("App v%s | Conexio SDK v" CONEXIO_CLOUD_VERSION, APP_VERSION_STRING);
  * @endcode
  */
-#define CONEXIO_CLOUD_VERSION "2.2.0"
+#define CONEXIO_CLOUD_VERSION "2.3.0"
 
 /* ── SDK status ──────────────────────────────────────────────────────────── */
 

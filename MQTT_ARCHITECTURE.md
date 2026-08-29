@@ -14,7 +14,7 @@ Conexio Stratus Pro device (nRF9151) and the Conexio Cloud backend.
 | Authentication | Mutual TLS — device certificate + private key |
 | MQTT version | 3.1.1 |
 | Session | Persistent (`clean_session = 0`) |
-| Keepalive | 120 seconds (configurable via `CONFIG_CONEXIO_CLOUD_MQTT_KEEPALIVE_SEC`) |
+| Keepalive | 120 seconds (`CONFIG_CONEXIO_CLOUD_MQTT_KEEPALIVE_SEC`) |
 | Port | 8883 |
 
 ### TLS Security Tags (modem credential storage)
@@ -27,36 +27,92 @@ Conexio Stratus Pro device (nRF9151) and the Conexio Cloud backend.
 
 Persistent session (`clean_session = 0`) means the AWS IoT Core broker
 queues QoS 1 messages addressed to this device while it sleeps in PSM.
-They are delivered immediately on the next reconnect — no commands are missed
-during deep sleep windows.
+They are delivered immediately on the next reconnect — no commands are missed.
+
+---
+
+## Topic Versioning
+
+All D2C topics use a version prefix controlled by `CONFIG_CONEXIO_CLOUD_TOPIC_VERSION`
+(default `v1`). Topics take the form:
+
+```
+{version}/devices/{deviceId}/{type}
+```
+
+The prefix allows the cloud to apply different IoT Rules per schema version.
+A v2 device can coexist with v1 devices without changes to existing Rules — both
+versions publish simultaneously and each is processed independently.
+
+**To migrate to v2:** change `CONFIG_CONEXIO_CLOUD_TOPIC_VERSION="v2"` in `prj.conf`,
+deploy to a subset of devices, and add v2 IoT Rules on the cloud side. No flag day.
 
 ---
 
 ## Device → Cloud (D2C)
 
-### 1. Telemetry
+Data is split across **five separate topics** based on content type. This allows
+the cloud to apply different IoT Rules per data type — e.g. location metrics trigger
+the HERE/AWS Location Lambda; alerts trigger SNS; diagnostics go to a metrics store.
+
+Each publish includes a `seq` field (monotonically increasing per topic, per boot)
+so the cloud can detect gaps in any stream independently.
+
+### 1. Telemetry — app sensor data
 
 ```
-Topic:   devices/{deviceId}/telemetry
-QoS:     1 (AT_LEAST_ONCE)
-When:    Every CONFIG_CONEXIO_CLOUD_INTERVAL_SEC seconds (default 30s)
+Topic:   v1/devices/{deviceId}/telemetry
+QoS:     1
+When:    Every interval when sensor callbacks are registered or app metrics queued
 Retain:  No
 ```
 
-Payload — compact JSON, no whitespace:
+Payload:
 
 ```json
 {
   "deviceId":  "355025934980275",
   "timestamp": "2026-08-25T12:34:56.789Z",
+  "seq":        42,
+  "topic":     "telemetry",
+  "metrics": {
+    "temperature": 29.5,
+    "humidity":    71.0,
+    "_battery_mv": 4046.99
+  }
+}
+```
+
+Contains: registered sensor callbacks + `conexio_cloud_send_metric()` values
+(excluding `_loc_*` metrics which go to the location topic).
+
+---
+
+### 2. Diagnostics — SDK system health
+
+```
+Topic:   v1/devices/{deviceId}/diagnostics
+QoS:     1
+When:    Every publish interval (always has data from SDK auto-metrics)
+Retain:  No
+```
+
+Payload:
+
+```json
+{
+  "deviceId":  "355025934980275",
+  "timestamp": "2026-08-25T12:34:56.789Z",
+  "seq":        42,
+  "topic":     "diagnostics",
   "metrics": {
     "_rssi":              -72,
     "_snr":               15,
     "_session_id":        "a3f2c891",
     "_reboot_cnt":        4,
     "_reboot_reason":     "por",
-    "_sdk_version":       "2.2.0",
-    "_app_fw_version":    "1.0.6",
+    "_sdk_version":       "2.3.0",
+    "_app_fw_version":    "1.0.7",
     "_modem_fw":          "nrf91x1_2.0.4",
     "_operator":          "VZW",
     "_lte_mode":          7,
@@ -70,45 +126,132 @@ Payload — compact JSON, no whitespace:
     "_modem_temp":        26,
     "_tx_kb":             4,
     "_rx_kb":             5,
-    "_battery_mv":        4046.99,
     "_battery_soc_pct":   85.4,
     "_battery_drain_pct_hr": 0.42,
-    "_publish_success_count": 12,
-    "_loc_mcc":           311,
-    "_loc_mnc":           480,
-    "_loc_cell_id":       129061889,
-    "_loc_tac":           52228,
-    "_loc_earfcn":        5230,
-    "_loc_rsrp":          -91,
-    "_loc_timing_adv":    16,
-    "_loc_neighbors":     "[{\"earfcn\":5230,\"pci\":198,\"rsrp\":-99}]",
-    "_log": [
-      {"l":"WRN","m":"cell_location","s":"neighbors=0, accuracy may be low"}
-    ],
-    "temperature": 29.5,
-    "humidity":    71.0
+    "_publish_success_count": 12
   }
 }
 ```
 
-**Metric publish tiers** (controls how often each metric appears):
+Contains: all SDK auto-metrics — signal quality, reboot tracking, LTE parameters,
+PSM/eDRX grants, data usage counters, battery fuel gauge metrics.
 
-| Tier | Metrics | Frequency |
-|---|---|---|
-| BOOT-ONCE | `_reboot_cnt`, `_reboot_reason`, `_sdk_version`, `_app_fw_version`, `_modem_fw`, `_operator`, `_lte_mode`, `_lte_connect_ms`, `_psm_tau_sec`, `_psm_active_sec`, `_edrx_ms`, `_session_id` | First publish after each boot only |
-| DELTA | `_lte_band`, `_cell_id`, `_tac` | On boot + when value changes + every `CONFIG_CONEXIO_CLOUD_SLOW_METRIC_INTERVAL` publishes as heartbeat |
-| EVERY | `_rssi`, `_snr`, `_conn_loss`, `_tx_kb`, `_rx_kb`, `_modem_temp`, `_battery_*`, application sensors | Every publish |
-| ON-FIX | `_loc_*` metrics | Immediately after AT%NCELLMEAS completes (separate publish triggered by `k_work`) |
-| ON-EVENT | `_log` array | When `CONFIG_CONEXIO_CLOUD_LOG_STREAM=y` and log entries are pending |
+Delta encoding: `_lte_band`, `_cell_id`, `_tac` only emitted when value changes
+(+ on boot + every `CONFIG_CONEXIO_CLOUD_SLOW_METRIC_INTERVAL` as heartbeat).
 
 ---
 
-### 2. Command ACK
+### 3. Location — cellular position fixes
 
 ```
-Topic:   devices/{deviceId}/commands/ack
+Topic:   v1/devices/{deviceId}/location
 QoS:     1
-When:    After the device executes an incoming command
+When:    Immediately after AT%NCELLMEAS completes (CONFIG_CELL_LOCATION_PUBLISH_ON_FIX=y)
+Retain:  No
+```
+
+Payload:
+
+```json
+{
+  "deviceId":  "355025934980275",
+  "timestamp": "2026-08-25T12:34:56.789Z",
+  "seq":        7,
+  "topic":     "location",
+  "metrics": {
+    "_loc_mcc":        311,
+    "_loc_mnc":        480,
+    "_loc_cell_id":    129061889,
+    "_loc_tac":        52228,
+    "_loc_earfcn":     5230,
+    "_loc_rsrp":       -91,
+    "_loc_timing_adv": 16,
+    "_loc_neighbors":  "[{\"earfcn\":5230,\"pci\":198,\"rsrp\":-99}]"
+  }
+}
+```
+
+Contains: all metrics prefixed with `_loc_` — automatically routed to this topic
+by the SDK when queued via `conexio_cloud_send_metric("_loc_*", ...)`.
+
+The AWS IoT Rule for this topic triggers the `iot-dashboard-location` Lambda
+which calls the HERE Positioning API and updates the AWS Location Tracker.
+
+---
+
+### 4. Logs — firmware log stream
+
+```
+Topic:   v1/devices/{deviceId}/logs
+QoS:     1
+When:    Every interval when CONFIG_CONEXIO_CLOUD_LOG_STREAM=y and entries pending
+Retain:  No
+```
+
+Payload:
+
+```json
+{
+  "deviceId":  "355025934980275",
+  "timestamp": "2026-08-25T12:34:56.789Z",
+  "seq":        3,
+  "topic":     "logs",
+  "metrics": {
+    "_log": [
+      {"l":"WRN","m":"cell_location","s":"neighbors=0, accuracy may be low"},
+      {"l":"ERR","m":"fota","s":"download timeout after 300s"}
+    ]
+  }
+}
+```
+
+Contains: log entries captured by the Zephyr log backend (`LOG_BACKEND_DEFINE`).
+Level abbreviations: `DBG` / `INF` / `WRN` / `ERR`. Module name truncated to 16 chars.
+Only published when `CONFIG_CONEXIO_CLOUD_LOG_STREAM=y` and log entries are pending.
+
+---
+
+### 5. Alerts — app-triggered threshold breaches
+
+```
+Topic:   v1/devices/{deviceId}/alerts
+QoS:     1
+When:    On demand — called by application via conexio_cloud_publish_alert()
+Retain:  No
+```
+
+Payload:
+
+```json
+{
+  "deviceId":  "355025934980275",
+  "timestamp": "2026-08-25T12:34:56.789Z",
+  "metric":    "temperature",
+  "value":     87.3,
+  "threshold": 85.0
+}
+```
+
+Published immediately to a dedicated topic so the cloud can apply a separate
+IoT Rule — e.g. SNS notification within seconds, independently of the regular
+DynamoDB telemetry write path.
+
+**Application usage:**
+```c
+float temp = read_temperature();
+if (temp > TEMP_ALERT_THRESHOLD) {
+    conexio_cloud_publish_alert("temperature", temp, TEMP_ALERT_THRESHOLD);
+}
+```
+
+---
+
+### 6. Command ACK
+
+```
+Topic:   v1/devices/{deviceId}/commands/ack
+QoS:     1 (queued for reliable delivery — retried if connection drops)
+When:    After executing a command. Retried up to CONFIG_CONEXIO_CLOUD_ACK_RETRY_MAX times.
 Retain:  No
 ```
 
@@ -118,15 +261,19 @@ Payload:
 {"commandId": "cmd_abc123", "sk": "CMD#1234567890", "result": "executed"}
 ```
 
+**Reliable delivery:** ACKs are stored in a RAM retry queue and retried on each
+`transport_poll()` cycle until delivered or the retry limit is reached. This
+prevents the "delivered forever" dashboard state when the connection drops
+between PUBACK and ACK publish.
+
 ---
 
-### 3. Config ACK
+### 7. Config ACK
 
 ```
-Topic:   devices/{deviceId}/config/ack
-QoS:     1
-When:    After the device applies an OTA Config push — sent AFTER all setting
-         handlers run so the result reflects actual success or failure
+Topic:   v1/devices/{deviceId}/config/ack
+QoS:     1 (queued for reliable delivery)
+When:    After applying OTA Config push — sent AFTER all setting handlers run
 Retain:  No
 ```
 
@@ -136,14 +283,17 @@ Payload:
 {"configId": "cfg_xyz789", "success": true}
 ```
 
+Sent after all setting handlers complete so it reports the actual result
+(applied/failed), not a premature acknowledgement.
+
 ---
 
-### 4. FOTA Status Updates
+### 8. FOTA Status Updates (AWS IoT Jobs — no version prefix)
 
 ```
 Topic:   $aws/things/{deviceId}/jobs/{jobId}/update
 QoS:     1
-When:    During and after a firmware download job
+When:    During and after firmware download job
 Retain:  No
 ```
 
@@ -156,20 +306,20 @@ Payload examples:
 {"status":"FAILED","statusDetails":{"reason":"download_error"}}
 ```
 
-This topic is the native AWS IoT Jobs API — the broker routes updates to
-EventBridge, which triggers the `iot-dashboard-firmware-job-status` Lambda
-to update DynamoDB and push the status change to the dashboard via WebSocket.
+This uses the native AWS IoT Jobs API — the format is fixed by AWS and cannot
+be changed. No version prefix is used. EventBridge triggers the
+`iot-dashboard-firmware-job-status` Lambda on status change.
 
 ---
 
 ## Cloud → Device (C2D)
 
-The device subscribes to two topics on every MQTT connect (CONNACK → SUBSCRIBE):
+Subscriptions use the versioned topic prefix. Subscribed on every CONNACK.
 
 ### 1. Commands
 
 ```
-Topic:   devices/{deviceId}/commands
+Topic:   v1/devices/{deviceId}/commands
 QoS:     1
 Source:  Conexio Console — Commands page, Schedules page
 ```
@@ -187,18 +337,18 @@ Payload:
 }
 ```
 
-Built-in SDK commands (handled automatically, no app registration needed):
+Built-in commands (handled automatically by SDK):
 
 | Command | Effect |
 |---|---|
 | `REBOOT` | `sys_reboot(SYS_REBOOT_COLD)` after 500ms log flush |
 | `SET_INTERVAL` | Updates telemetry interval at runtime |
-| `FIRMWARE_UPDATE` | Starts FOTA download |
+| `FIRMWARE_UPDATE` | Starts FOTA download (respects `fota_set_can_start_cb()`) |
 
 ### 2. OTA Config
 
 ```
-Topic:   devices/{deviceId}/config
+Topic:   v1/devices/{deviceId}/config
 QoS:     1
 Source:  Conexio Console — OTA Config page
 ```
@@ -222,83 +372,71 @@ Payload:
 ## Message Flow Diagram
 
 ```
-Device (nRF9151)                 AWS IoT Core              Conexio Cloud
-────────────────                 ────────────              ─────────────
+Device (nRF9151)                    AWS IoT Core             Conexio Cloud
+────────────────                    ────────────             ─────────────
 
-telemetry ──────────────────────► IoT Rule ──────────────► ingestion Lambda
-                                                            │
-                                                            ├─► DynamoDB (devices, telemetry)
-                                                            ├─► EventBridge (iot-dashboard-internal)
-                                                            │     └─► location Lambda (→ HERE API)
-                                                            └─► WebSocket push to dashboard
+v1/.../telemetry ──────────────────► IoT Rule ─────────────► ingestion Lambda → DynamoDB
+v1/.../diagnostics ────────────────► IoT Rule ─────────────► metrics Lambda   → DynamoDB
+v1/.../location ───────────────────► IoT Rule ─────────────► location Lambda → HERE API → Tracker
+v1/.../logs ───────────────────────► IoT Rule ─────────────► logs Lambda      → CloudWatch / S3
+v1/.../alerts ─────────────────────► IoT Rule ─────────────► SNS notification (immediate)
+                                                               └─► DynamoDB (alert log)
 
-                  ◄── commands ────── commands Lambda ◄──── dashboard action
-commands/ack ───────────────────►
+v1/.../commands/ack ───────────────► (rule optional)        → dashboard WebSocket
+v1/.../config/ack ─────────────────► (rule optional)        → dashboard WebSocket
 
-                  ◄── config ──────── config Lambda ◄─────── OTA Config page push
-config/ack ─────────────────────►
+               ◄── v1/.../commands ─── commands Lambda ◄─── dashboard action
+v1/.../commands/ack ───────────────►   (queued retry)
 
-                  ◄── FIRMWARE_UPDATE (via commands topic)
-$aws/.../jobs/update ───────────► EventBridge ────────────► firmware-job-status Lambda
+               ◄── v1/.../config ───── config Lambda ◄───── OTA Config page
+v1/.../config/ack ─────────────────►   (queued retry)
+
+               ◄── FIRMWARE_UPDATE (via v1/.../commands)
+$aws/.../jobs/update ──────────────► EventBridge ──────────► firmware-job-status Lambda
                                                               └─► WebSocket (Completed/Failed)
 ```
 
 ---
 
-## Critical Message Ordering (commands)
+## Critical Message Ordering (incoming commands)
 
 For every incoming QoS 1 message the SDK executes in strict order to prevent
-re-delivery loops (e.g. a `REBOOT` command that reboots before its PUBACK is sent):
+re-delivery loops (e.g. a `REBOOT` command rebooting before its PUBACK is sent):
 
 ```
-1. mqtt_publish_qos1_ack()   — PUBACK to broker (AWS stops retrying)
-2. publish_command_ack()      — dashboard ACK (Command History: delivered → acknowledged)
-3. k_sleep(200ms)             — flush window: ensures both packets leave the modem
-4. transport_on_message()     — dispatch to app handler (safe to reboot now)
+1. mqtt_publish_qos1_ack()     — PUBACK to broker (AWS stops retrying)
+2. transport_queue_ack()        — queue dashboard ACK for reliable delivery
+3. k_sleep(200ms)               — flush window: PUBACK bytes leave modem
+4. transport_on_message()       — dispatch to app handler (safe to reboot now)
 ```
 
-Config ACK is deferred until step 4 completes so it reports the real
-success/failure from setting handlers, not a premature acknowledgement.
+Config ACK is sent via `transport_config_ack()` after step 4 completes, so it
+reflects the real success/failure from setting handlers.
 
 ---
 
-## Production Hardening — Known Gaps
+## ACK Reliability
 
-The following items are not yet implemented and should be addressed before
-large-scale fleet deployment:
+Both `commands/ack` and `config/ack` are queued in a RAM retry buffer
+(`ACK_QUEUE_DEPTH = 8`) rather than fire-and-forget. On each `transport_poll()`
+cycle, `transport_drain_ack_queue()` attempts delivery of all pending ACKs.
 
-### 1. No schema versioning in topic paths
+- On success: slot freed immediately
+- On failure: retry counter incremented; slot dropped after `CONFIG_CONEXIO_CLOUD_ACK_RETRY_MAX` (default 5) retries
+- Prevents "delivered forever" dashboard state on transient disconnects
 
-**Current:** `devices/{deviceId}/telemetry`
-**Recommended:** `devices/{deviceId}/v1/telemetry`
+---
 
-Adding a version prefix now costs nothing. Without it, changing the JSON
-schema requires all devices and all Lambda consumers to update simultaneously
-with no transition period.
+## Kconfig Reference
 
-### 2. ACK publish failures are silent
-
-If the MQTT connection drops between the PUBACK and the dashboard ACK publish,
-the dashboard shows "delivered" indefinitely with no retry. A small in-RAM
-retry queue for `commands/ack` and `config/ack` (attempt on next publish cycle)
-would close this gap.
-
-### 3. All data on one telemetry topic
-
-Telemetry metrics, location fixes, and log stream entries all multiplex onto
-`devices/{deviceId}/telemetry`. As payload size grows this approaches AWS IoT
-Core's 128 KB message limit. Consider splitting:
-
-- `devices/{deviceId}/telemetry` — sensor + modem metrics (high frequency)
-- `devices/{deviceId}/logs` — `_log` entries (when `LOG_STREAM=y`)
-- Location data already uses a dedicated Lambda path via EventBridge
-
-### 4. No device-initiated alert topic
-
-Threshold breaches are currently embedded in the telemetry payload. A
-dedicated `devices/{deviceId}/alerts` topic would allow different IoT Rules
-for immediate notifications (SNS) vs. storage (DynamoDB), without
-processing every telemetry message through the alert path.
+| Option | Default | Description |
+|---|---|---|
+| `CONFIG_CONEXIO_CLOUD_TOPIC_VERSION` | `"v1"` | Topic version prefix |
+| `CONFIG_CONEXIO_CLOUD_ACK_RETRY_MAX` | `5` | ACK retry limit before dropping |
+| `CONFIG_CONEXIO_CLOUD_SLOW_METRIC_INTERVAL` | `10` | Diagnostics heartbeat interval (publishes) |
+| `CONFIG_CONEXIO_CLOUD_LOG_STREAM` | `n` | Enable Zephyr log backend forwarding |
+| `CONFIG_CONEXIO_CLOUD_LOG_LEVEL` | `2` | Min log level (0=DBG…3=ERR) |
+| `CONFIG_CELL_LOCATION_PUBLISH_ON_FIX` | `y` | Publish location topic immediately on AT%NCELLMEAS |
 
 ---
 
@@ -306,12 +444,15 @@ processing every telemetry message through the alert path.
 
 | File | Purpose |
 |---|---|
-| `src/transport/mqtt_transport.c` | MQTT client, topic strings, pub/sub, TLS config |
-| `src/conexio_cloud.c` | Payload builder, metric queue, session ID, boot sequence |
-| `src/fota.c` | AWS IoT Jobs status updates (`$aws/things/.../jobs/.../update`) |
+| `src/transport/mqtt_transport.c` | MQTT client, versioned topic strings, ACK retry queue |
+| `src/transport.h` | Internal transport interface, TOPIC_CAT_* constants |
+| `src/conexio_cloud.c` | Payload builder per category, metric routing, sequence numbers |
+| `src/fota.c` | AWS IoT Jobs status (`$aws/things/.../jobs/.../update`) |
+| `src/log_stream.c` | Zephyr log backend → logs topic |
+| `src/cell_location.c` | AT%NCELLMEAS → location topic |
 | `include/conexio_cloud/conexio_cloud.h` | Public API |
 | `Kconfig` | All configurable parameters |
 
 ---
 
-*Last updated: August 2026 — Conexio SDK v2.2.0*
+*Last updated: August 2026 — Conexio SDK v2.3.0 / App v1.0.7*

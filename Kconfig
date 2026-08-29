@@ -336,12 +336,7 @@ config CONEXIO_CLOUD_FOTA_DOWNLOAD_TIMEOUT_SEC
 	depends on CONEXIO_CLOUD_FOTA
 	help
 	  Maximum seconds to wait for a firmware binary to download before
-	  aborting. Handled by CONFIG_FOTA_DOWNLOAD_TIMEOUT_MS in NCS v3.2.1.
-	  This option is kept for documentation purposes but is no longer passed
-	  to fota_download_start() (whose 5th argument is fragment_size, not timeout).
-	  Configure the actual timeout via CONFIG_FOTA_DOWNLOAD_TIMEOUT_MS in prj.conf.
-	  600s (10 min) is the maximum — beyond this a stuck download drains the
-	  battery without benefit. Typical download time is under 2 minutes on NB-IoT.
+	  aborting. Configure the actual timeout via CONFIG_FOTA_DOWNLOAD_TIMEOUT_MS.
 
 config FOTA_PAUSE_RETRY_SEC
 	int "FOTA maintenance window retry interval (seconds)"
@@ -349,14 +344,47 @@ config FOTA_PAUSE_RETRY_SEC
 	range 5 3600
 	depends on CONEXIO_CLOUD_FOTA
 	help
-	  When a can_start callback is registered via fota_set_can_start_cb()
-	  and it returns false (device not in a safe state), the FOTA module
-	  waits this many seconds before checking again.
-	  Default: 60 s — check once per minute whether the maintenance window
-	  has opened. Set lower (e.g. 5) for faster response in testing, or
-	  higher (e.g. 300) for infrequent checks on battery-constrained devices.
+	  How often to retry the can_start callback when a FOTA download is
+	  deferred by the application's maintenance window check.
 
 endmenu # FOTA
+
+# ── Topic architecture ────────────────────────────────────────────────────────
+
+menu "Topic Architecture"
+
+config CONEXIO_CLOUD_TOPIC_VERSION
+	string "MQTT topic version prefix"
+	default "v1"
+	help
+	  Version prefix prepended to all D2C topic paths.
+	  Topics take the form: {prefix}/devices/{deviceId}/{type}
+	  e.g. v1/devices/355025934980275/telemetry
+
+	  Changing this value migrates all topics to the new version simultaneously.
+	  To migrate gradually, deploy firmware with "v2" to a subset of devices
+	  while keeping "v1" IoT Rules active — both versions coexist safely because
+	  the AWS IoT Rules are independent per topic.
+
+	  Default "v1" — do not change until a breaking schema change requires it.
+
+config CONEXIO_CLOUD_ACK_RETRY_MAX
+	int "Maximum ACK delivery retries before dropping"
+	default 5
+	range 1 20
+	help
+	  When a command/ack or config/ack publish fails (e.g. the MQTT connection
+	  drops between PUBACK and the dashboard ACK), the SDK queues the ACK and
+	  retries on each transport_poll() cycle.
+
+	  This option sets how many retries are attempted before the ACK is
+	  silently dropped. The cloud's telemetry fallback path handles permanent
+	  ACK loss for FOTA jobs; for commands the dashboard timeout applies.
+
+	  Default 5 — at a 500ms poll interval this covers ~2.5s of outage.
+	  Increase for networks with frequent brief disconnects.
+
+endmenu # Topic Architecture
 
 # ── Log streaming — forward Zephyr log messages to the cloud ─────────────────
 

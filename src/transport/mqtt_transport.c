@@ -75,12 +75,60 @@ static bool connected = false;
  * until the connection is established rather than returning immediately. */
 static K_SEM_DEFINE(connack_sem, 0, 1);
 
-/* Topic strings built at init from the device ID */
-static char telemetry_topic[64]; /* devices/<id>/telemetry                 */
-static char command_topic[64];   /* devices/<id>/commands                  */
-static char config_topic[64];    /* devices/<id>/config                    */
-static char cmd_ack_topic[80];   /* devices/<id>/commands/ack              */
-static char cfg_ack_topic[80];   /* devices/<id>/config/ack                */
+/* Topic strings built at init from the device ID.
+ *
+ * All D2C topics are versioned with a "v1/" prefix so the cloud can route
+ * different schema versions independently and devices can be migrated
+ * topic-by-topic without a flag day.
+ *
+ * Topic map:
+ *   v1/devices/{id}/telemetry    — app sensor data (temperature, humidity…)
+ *   v1/devices/{id}/diagnostics  — SDK system metrics (_rssi, _reboot, _lte…)
+ *   v1/devices/{id}/location     — cellular location fixes (_loc_*)
+ *   v1/devices/{id}/logs         — log stream entries (_log array)
+ *   v1/devices/{id}/alerts       — app-triggered threshold alerts
+ *   v1/devices/{id}/commands/ack — command ACK (queued for reliable delivery)
+ *   v1/devices/{id}/config/ack   — config ACK (queued for reliable delivery)
+ *   v1/devices/{id}/commands     — C2D commands (subscribe)
+ *   v1/devices/{id}/config       — C2D config pushes (subscribe)
+ */
+#define TOPIC_PREFIX "v1/"
+#define TOPIC_LEN    80
+
+static char telemetry_topic[TOPIC_LEN];    /* v1/devices/{id}/telemetry    */
+static char diagnostics_topic[TOPIC_LEN];  /* v1/devices/{id}/diagnostics  */
+static char location_topic[TOPIC_LEN];     /* v1/devices/{id}/location     */
+static char logs_topic[TOPIC_LEN];         /* v1/devices/{id}/logs         */
+static char alerts_topic[TOPIC_LEN];       /* v1/devices/{id}/alerts       */
+static char command_topic[TOPIC_LEN];      /* v1/devices/{id}/commands     */
+static char config_topic[TOPIC_LEN];       /* v1/devices/{id}/config       */
+static char cmd_ack_topic[TOPIC_LEN];      /* v1/devices/{id}/commands/ack */
+static char cfg_ack_topic[TOPIC_LEN];      /* v1/devices/{id}/config/ack   */
+
+/* ── ACK retry queue ──────────────────────────────────────────────────────
+ *
+ * When the connection drops between PUBACK and the dashboard ACK publish,
+ * the ACK is lost and the dashboard shows "delivered" forever. This ring
+ * buffer stores pending ACKs and retries them on every poll cycle until
+ * delivered or the retry limit is reached.
+ *
+ * Sized for CONFIG_CONEXIO_CLOUD_ACK_RETRY_MAX retries per slot.
+ * Protected by a spinlock so it is safe to write from the MQTT event
+ * handler context and read from the SDK background thread.
+ */
+#define ACK_QUEUE_DEPTH   8
+#define ACK_PAYLOAD_MAX  128
+
+struct pending_ack {
+    char     payload[ACK_PAYLOAD_MAX];
+    uint16_t len;
+    uint8_t  retries;
+    bool     is_config;   /* true → cfg_ack_topic, false → cmd_ack_topic */
+    bool     used;
+};
+
+static struct pending_ack g_ack_queue[ACK_QUEUE_DEPTH];
+static struct k_spinlock  g_ack_lock;
 
 /* Broker hostname stored at init; used when (re)connecting */
 static char g_broker_host[128];
@@ -99,77 +147,122 @@ static char g_broker_host[128];
  *   { "configId": "...", "success": true }
  */
 
-static void publish_command_ack(const char *command_id, const char *sk,
-                                 const char *result)
+/* ── ACK queue helpers ────────────────────────────────────────────────────
+ *
+ * transport_queue_ack() — add an ACK to the retry queue.
+ * transport_drain_ack_queue() — attempt delivery of all pending ACKs;
+ *   called from transport_poll() on every cycle.
+ *
+ * If delivery succeeds the slot is freed. If it fails (not connected or
+ * mqtt_publish error) the slot stays and is retried next poll cycle.
+ * After CONFIG_CONEXIO_CLOUD_ACK_RETRY_MAX retries the slot is dropped
+ * with a warning — the telemetry fallback path on the cloud side handles
+ * permanent ACK loss for FOTA; for commands the cloud timeout applies.
+ */
+
+void transport_queue_ack(bool is_config, const char *payload, size_t len)
 {
-    if (!connected || !command_id) return;
-
-    cJSON *ack = cJSON_CreateObject();
-    cJSON_AddStringToObject(ack, "commandId", command_id);
-    if (sk)     cJSON_AddStringToObject(ack, "sk",     sk);
-    if (result) cJSON_AddStringToObject(ack, "result", result);
-
-    char *json = cJSON_PrintUnformatted(ack);
-    cJSON_Delete(ack);
-    if (!json) return;
-
-    struct mqtt_publish_param msg = {
-        .message.topic.qos        = MQTT_QOS_1_AT_LEAST_ONCE,
-        .message.topic.topic.utf8 = (uint8_t *)cmd_ack_topic,
-        .message.topic.topic.size = strlen(cmd_ack_topic),
-        .message.payload.data     = (uint8_t *)json,
-        .message.payload.len      = strlen(json),
-        .message_id               = (uint16_t)(k_uptime_get_32() & 0xFFFF),
-        .dup_flag                 = 0,
-        .retain_flag              = 0,
-    };
-
-    int ret = mqtt_publish(&client, &msg);
-    if (ret) {
-        LOG_WRN("Command ACK publish failed (%d) — status may stay 'delivered'", ret);
-    } else {
-        LOG_DBG("Command ACK published: id=%s", command_id);
+    if (!payload || len == 0 || len >= ACK_PAYLOAD_MAX) {
+        return;
     }
-    cJSON_free(json);
+
+    k_spinlock_key_t key = k_spin_lock(&g_ack_lock);
+
+    /* Find a free slot */
+    for (int i = 0; i < ACK_QUEUE_DEPTH; i++) {
+        if (!g_ack_queue[i].used) {
+            memcpy(g_ack_queue[i].payload, payload, len);
+            g_ack_queue[i].payload[len] = '\0';
+            g_ack_queue[i].len       = (uint16_t)len;
+            g_ack_queue[i].retries   = 0;
+            g_ack_queue[i].is_config = is_config;
+            g_ack_queue[i].used      = true;
+            k_spin_unlock(&g_ack_lock, key);
+            LOG_DBG("ACK queued (%s, %zu bytes)",
+                    is_config ? "config" : "command", len);
+            return;
+        }
+    }
+
+    k_spin_unlock(&g_ack_lock, key);
+    LOG_WRN("ACK queue full — dropping ACK (increase ACK_QUEUE_DEPTH)");
 }
 
-static void publish_config_ack(const char *config_id, bool success)
+void transport_drain_ack_queue(void)
 {
-    if (!connected) return;
-
-    cJSON *ack = cJSON_CreateObject();
-    if (config_id) cJSON_AddStringToObject(ack, "configId", config_id);
-    cJSON_AddBoolToObject(ack, "success", success);
-
-    char *json = cJSON_PrintUnformatted(ack);
-    cJSON_Delete(ack);
-    if (!json) return;
-
-    struct mqtt_publish_param msg = {
-        .message.topic.qos        = MQTT_QOS_1_AT_LEAST_ONCE,
-        .message.topic.topic.utf8 = (uint8_t *)cfg_ack_topic,
-        .message.topic.topic.size = strlen(cfg_ack_topic),
-        .message.payload.data     = (uint8_t *)json,
-        .message.payload.len      = strlen(json),
-        .message_id               = (uint16_t)(k_uptime_get_32() & 0xFFFF),
-        .dup_flag                 = 0,
-        .retain_flag              = 0,
-    };
-
-    int ret = mqtt_publish(&client, &msg);
-    if (ret) {
-        LOG_WRN("Config ACK publish failed (%d) — config may stay 'pending'", ret);
-    } else {
-        LOG_DBG("Config ACK published: id=%s success=%d",
-                config_id ? config_id : "(none)", (int)success);
+    if (!connected) {
+        return;
     }
-    cJSON_free(json);
+
+    for (int i = 0; i < ACK_QUEUE_DEPTH; i++) {
+        k_spinlock_key_t key = k_spin_lock(&g_ack_lock);
+
+        if (!g_ack_queue[i].used) {
+            k_spin_unlock(&g_ack_lock, key);
+            continue;
+        }
+
+        /* Snapshot under lock so we can publish without holding spinlock
+         * (mqtt_publish can block briefly on the MQTT TX buffer). */
+        struct pending_ack snap = g_ack_queue[i];
+
+        k_spin_unlock(&g_ack_lock, key);
+
+        const char *topic = snap.is_config ? cfg_ack_topic : cmd_ack_topic;
+
+        struct mqtt_publish_param msg = {
+            .message.topic.qos        = MQTT_QOS_1_AT_LEAST_ONCE,
+            .message.topic.topic.utf8 = (uint8_t *)topic,
+            .message.topic.topic.size = strlen(topic),
+            .message.payload.data     = (uint8_t *)snap.payload,
+            .message.payload.len      = snap.len,
+            .message_id               = (uint16_t)(k_uptime_get_32() & 0xFFFF),
+            .dup_flag                 = 0,
+            .retain_flag              = 0,
+        };
+
+        int ret = mqtt_publish(&client, &msg);
+
+        key = k_spin_lock(&g_ack_lock);
+
+        if (ret == 0) {
+            /* Delivered — free slot */
+            g_ack_queue[i].used = false;
+            LOG_DBG("ACK delivered (%s)", snap.is_config ? "config" : "cmd");
+        } else {
+            g_ack_queue[i].retries++;
+            if (g_ack_queue[i].retries >= CONFIG_CONEXIO_CLOUD_ACK_RETRY_MAX) {
+                LOG_WRN("ACK dropped after %d retries (%s)",
+                        g_ack_queue[i].retries,
+                        snap.is_config ? "config" : "cmd");
+                g_ack_queue[i].used = false;
+            } else {
+                LOG_DBG("ACK retry %d/%d (%s)",
+                        g_ack_queue[i].retries,
+                        CONFIG_CONEXIO_CLOUD_ACK_RETRY_MAX,
+                        snap.is_config ? "config" : "cmd");
+            }
+        }
+
+        k_spin_unlock(&g_ack_lock, key);
+    }
 }
 
-/* Public wrapper — called from conexio_cloud.c after all settings processed */
+/* Public wrapper — called from conexio_cloud.c after all settings processed.
+ * Queues for reliable delivery instead of fire-and-forget. */
 void transport_config_ack(const char *config_id, bool success)
 {
-    publish_config_ack(config_id, success);
+    if (!config_id) return;
+
+    cJSON *ack = cJSON_CreateObject();
+    cJSON_AddStringToObject(ack, "configId", config_id);
+    cJSON_AddBoolToObject(ack, "success", success);
+    char *json = cJSON_PrintUnformatted(ack);
+    cJSON_Delete(ack);
+    if (!json) return;
+
+    transport_queue_ack(true, json, strlen(json));
+    cJSON_free(json);
 }
 
 /* ── MQTT event handler ───────────────────────────────────────────────────
@@ -324,7 +417,17 @@ static void mqtt_evt_handler(struct mqtt_client *c, const struct mqtt_evt *evt)
          * Config ACK is sent AFTER dispatch (in transport_on_message) so
          * it reflects the real result from the setting handlers. */
         if (type && strcmp(type, "command") == 0) {
-            publish_command_ack(command_id, sk, "executed");
+            cJSON *ack = cJSON_CreateObject();
+            cJSON_AddStringToObject(ack, "commandId", command_id ? command_id : "");
+            if (sk) cJSON_AddStringToObject(ack, "sk", sk);
+            cJSON_AddStringToObject(ack, "result", "executed");
+            char *ack_json = cJSON_PrintUnformatted(ack);
+            cJSON_Delete(ack);
+            if (ack_json) {
+                /* Queue for reliable delivery — retried if connection drops */
+                transport_queue_ack(false, ack_json, strlen(ack_json));
+                cJSON_free(ack_json);
+            }
         }
         /* Config ACK is intentionally deferred — see transport_config_ack() */
 
@@ -381,25 +484,53 @@ int transport_init_with_config(const char *device_id,
     /* Store broker host so transport_connect() can resolve it later */
     strncpy(g_broker_host, cfg->mqtt_host, sizeof(g_broker_host) - 1);
 
-    /* Build per-device MQTT topic strings.
-     * All topics follow the pattern devices/<IMEI-derived-id>/<type>. */
-    snprintf(telemetry_topic, sizeof(telemetry_topic),
-             "devices/%s/telemetry", device_id);
-    snprintf(command_topic, sizeof(command_topic),
-             "devices/%s/commands", device_id);
-    snprintf(config_topic, sizeof(config_topic),
-             "devices/%s/config", device_id);
-    snprintf(cmd_ack_topic, sizeof(cmd_ack_topic),
-             "devices/%s/commands/ack", device_id);
-    snprintf(cfg_ack_topic, sizeof(cfg_ack_topic),
-             "devices/%s/config/ack", device_id);
+    /* Build per-device MQTT topic strings with v1/ version prefix.
+     * The prefix allows the cloud to route different schema versions
+     * independently — a v2 device can coexist with v1 devices without
+     * any IoT Rule or Lambda changes until the migration is complete.
+     *
+     * D2C topics (publish):
+     *   v1/devices/{id}/telemetry    — app sensor data
+     *   v1/devices/{id}/diagnostics  — SDK system metrics
+     *   v1/devices/{id}/location     — cellular location fixes
+     *   v1/devices/{id}/logs         — log stream entries
+     *   v1/devices/{id}/alerts       — app-triggered threshold alerts
+     *   v1/devices/{id}/commands/ack — command ACK
+     *   v1/devices/{id}/config/ack   — config push ACK
+     *
+     * C2D topics (subscribe):
+     *   v1/devices/{id}/commands     — commands from Conexio Console
+     *   v1/devices/{id}/config       — OTA Config pushes
+     */
+    snprintf(telemetry_topic,   sizeof(telemetry_topic),
+             TOPIC_PREFIX "devices/%s/telemetry",   device_id);
+    snprintf(diagnostics_topic, sizeof(diagnostics_topic),
+             TOPIC_PREFIX "devices/%s/diagnostics", device_id);
+    snprintf(location_topic,    sizeof(location_topic),
+             TOPIC_PREFIX "devices/%s/location",    device_id);
+    snprintf(logs_topic,        sizeof(logs_topic),
+             TOPIC_PREFIX "devices/%s/logs",        device_id);
+    snprintf(alerts_topic,      sizeof(alerts_topic),
+             TOPIC_PREFIX "devices/%s/alerts",      device_id);
+    snprintf(command_topic,     sizeof(command_topic),
+             TOPIC_PREFIX "devices/%s/commands",    device_id);
+    snprintf(config_topic,      sizeof(config_topic),
+             TOPIC_PREFIX "devices/%s/config",      device_id);
+    snprintf(cmd_ack_topic,     sizeof(cmd_ack_topic),
+             TOPIC_PREFIX "devices/%s/commands/ack", device_id);
+    snprintf(cfg_ack_topic,     sizeof(cfg_ack_topic),
+             TOPIC_PREFIX "devices/%s/config/ack",  device_id);
 
-    LOG_DBG("MQTT topics for %s:", device_id);
-    LOG_DBG("  TX telemetry : %s", telemetry_topic);
-    LOG_DBG("  RX commands  : %s", command_topic);
-    LOG_DBG("  RX config    : %s", config_topic);
-    LOG_DBG("  TX cmd ACK   : %s", cmd_ack_topic);
-    LOG_DBG("  TX cfg ACK   : %s", cfg_ack_topic);
+    LOG_INF("MQTT topics (v1) for device %s:", device_id);
+    LOG_DBG("  TX telemetry   : %s", telemetry_topic);
+    LOG_DBG("  TX diagnostics : %s", diagnostics_topic);
+    LOG_DBG("  TX location    : %s", location_topic);
+    LOG_DBG("  TX logs        : %s", logs_topic);
+    LOG_DBG("  TX alerts      : %s", alerts_topic);
+    LOG_DBG("  RX commands    : %s", command_topic);
+    LOG_DBG("  RX config      : %s", config_topic);
+    LOG_DBG("  TX cmd ACK     : %s", cmd_ack_topic);
+    LOG_DBG("  TX cfg ACK     : %s", cfg_ack_topic);
     return 0;
 }
 
@@ -533,16 +664,29 @@ bool transport_is_connected(void)
  */
 int transport_publish(const char *payload, size_t len)
 {
+    return transport_publish_to(TOPIC_CAT_TELEMETRY, payload, len);
+}
+
+int transport_publish_to(char category, const char *payload, size_t len)
+{
     if (!connected) return -ENOTCONN;
+
+    const char *topic;
+
+    switch (category) {
+    case TOPIC_CAT_DIAGNOSTICS: topic = diagnostics_topic; break;
+    case TOPIC_CAT_LOCATION:    topic = location_topic;    break;
+    case TOPIC_CAT_LOGS:        topic = logs_topic;        break;
+    case TOPIC_CAT_TELEMETRY:   /* fall-through */
+    default:                    topic = telemetry_topic;   break;
+    }
 
     struct mqtt_publish_param msg = {
         .message.topic.qos        = MQTT_QOS_1_AT_LEAST_ONCE,
-        .message.topic.topic.utf8 = (uint8_t *)telemetry_topic,
-        .message.topic.topic.size = strlen(telemetry_topic),
+        .message.topic.topic.utf8 = (uint8_t *)topic,
+        .message.topic.topic.size = strlen(topic),
         .message.payload.data     = (uint8_t *)payload,
         .message.payload.len      = len,
-        /* message_id must be non-zero and unique per outstanding QoS 1 publish.
-         * Using the lower 16 bits of uptime gives good uniqueness in practice. */
         .message_id               = (uint16_t)(k_uptime_get_32() & 0xFFFF),
         .dup_flag                 = 0,
         .retain_flag              = 0,
@@ -550,7 +694,31 @@ int transport_publish(const char *payload, size_t len)
 
     int ret = mqtt_publish(&client, &msg);
     if (ret) {
-        LOG_ERR("mqtt_publish failed (%d)", ret);
+        LOG_ERR("mqtt_publish to '%s' failed (%d)", topic, ret);
+    }
+    return ret;
+}
+
+int transport_publish_alert(const char *payload, size_t len)
+{
+    if (!connected || !payload) return -ENOTCONN;
+
+    struct mqtt_publish_param msg = {
+        .message.topic.qos        = MQTT_QOS_1_AT_LEAST_ONCE,
+        .message.topic.topic.utf8 = (uint8_t *)alerts_topic,
+        .message.topic.topic.size = strlen(alerts_topic),
+        .message.payload.data     = (uint8_t *)payload,
+        .message.payload.len      = len,
+        .message_id               = (uint16_t)(k_uptime_get_32() & 0xFFFF),
+        .dup_flag                 = 0,
+        .retain_flag              = 0,
+    };
+
+    int ret = mqtt_publish(&client, &msg);
+    if (ret) {
+        LOG_ERR("Alert publish to '%s' failed (%d)", alerts_topic, ret);
+    } else {
+        LOG_DBG("Alert published (%zu bytes)", len);
     }
     return ret;
 }
@@ -629,5 +797,10 @@ void transport_poll(k_timeout_t timeout)
         LOG_WRN("mqtt_live error (%d) — connection lost", ret);
         connected = false;
         transport_on_disconnected();
+        return;
     }
+
+    /* Drain any pending ACKs — retries command/config ACKs that failed
+     * on a previous poll cycle due to a transient connection drop. */
+    transport_drain_ack_queue();
 }

@@ -137,7 +137,7 @@
 #endif
 
 /* SDK semantic version — reported in every telemetry payload as _sdk_version */
-#define CONEXIO_SDK_VERSION "2.2.0"
+#define CONEXIO_SDK_VERSION "2.3.0"
 
 LOG_MODULE_REGISTER(conexio_cloud, LOG_LEVEL_INF);
 
@@ -167,6 +167,16 @@ static K_SEM_DEFINE(g_connected_sem, 0, 1);  /* given on MQTT CONNACK */
  * compute a per-device publish reliability percentage. */
 static uint32_t g_publish_success_count = 0;
 static uint32_t g_publish_fail_count    = 0;
+
+/* ── Per-topic sequence numbers ───────────────────────────────────────────
+ * Monotonically increasing per topic. Included in every payload so the
+ * cloud can detect gaps (missed messages) and reorder out-of-order delivery
+ * within a single topic stream. Reset to 0 on device reboot (RAM-only).
+ */
+static uint32_t g_seq_telemetry    = 0;
+static uint32_t g_seq_diagnostics  = 0;
+static uint32_t g_seq_location     = 0;
+static uint32_t g_seq_logs         = 0;
 
 #if defined(CONFIG_CONEXIO_CLOUD_BATTERY_METRICS)
 #include <zephyr/drivers/sensor.h>
@@ -392,6 +402,7 @@ static int setting_count = 0;   /* Number of registered settings */
 struct metric_entry {
     char   name[MAX_METRIC_NAME];
     char   type;          /* 'n', 's', or 'b' */
+    char   category;      /* TOPIC_CAT_* — which topic this metric routes to */
     double num_val;        /* Used when type == 'n' */
     char   str_val[64];   /* Used when type == 's' */
     bool   bool_val;       /* Used when type == 'b' */
@@ -1564,7 +1575,36 @@ void transport_on_disconnected(void)
  * Called by conexio_cloud_publish() in the background thread.
  * Returns a heap-allocated string — caller must cJSON_free() it.
  */
+/* Forward declaration — build_payload_for_category defined below */
+static char *build_payload_for_category(char category);
+
 static char *build_payload(void)
+{
+    /* Default: build the app telemetry payload (backwards compatibility).
+     * The new split-publish path in conexio_cloud_publish() calls
+     * build_payload_for_category() directly. This shim handles the
+     * offline buffer replay path which passes raw JSON strings anyway. */
+    return build_payload_for_category(TOPIC_CAT_TELEMETRY);
+}
+
+/* ── build_payload_for_category ───────────────────────────────────────────
+ *
+ * Builds a JSON payload containing only the metrics that belong to the
+ * given category. Each category maps to a separate versioned MQTT topic:
+ *
+ *   TOPIC_CAT_TELEMETRY   → v1/devices/{id}/telemetry    (app sensors)
+ *   TOPIC_CAT_DIAGNOSTICS → v1/devices/{id}/diagnostics  (SDK system metrics)
+ *   TOPIC_CAT_LOCATION    → v1/devices/{id}/location     (_loc_* metrics)
+ *   TOPIC_CAT_LOGS        → v1/devices/{id}/logs         (_log stream)
+ *
+ * All payloads share the same envelope: deviceId, timestamp, seq, metrics.
+ * The sequence number is per-topic so each stream can be monitored for gaps
+ * independently.
+ *
+ * Returns a heap-allocated JSON string. Caller must cJSON_free() it.
+ * Returns NULL on out-of-memory.
+ */
+static char *build_payload_for_category(char category)
 {
     /* ── Timestamp ────────────────────────────────────────────────────── */
     char timestamp[40];
@@ -1595,9 +1635,28 @@ static char *build_payload(void)
 
     cJSON_AddStringToObject(root, "deviceId",  g_device_id);
     cJSON_AddStringToObject(root, "timestamp", timestamp);
+
+    /* Sequence number — monotonically increasing per topic stream.
+     * Lets the cloud detect gaps and reorder out-of-order delivery. */
+    uint32_t *seq_ptr;
+    const char *topic_name;
+    switch (category) {
+    case TOPIC_CAT_DIAGNOSTICS: seq_ptr = &g_seq_diagnostics; topic_name = "diagnostics"; break;
+    case TOPIC_CAT_LOCATION:    seq_ptr = &g_seq_location;    topic_name = "location";    break;
+    case TOPIC_CAT_LOGS:        seq_ptr = &g_seq_logs;        topic_name = "logs";        break;
+    case TOPIC_CAT_TELEMETRY:   /* fall-through */
+    default:                    seq_ptr = &g_seq_telemetry;   topic_name = "telemetry";   break;
+    }
+    cJSON_AddNumberToObject(root, "seq",   (double)(*seq_ptr)++);
+    cJSON_AddStringToObject(root,  "topic", topic_name);
+
     cJSON_AddItemToObject(root, "metrics", metrics);
 
-    /* ── Auto-metrics from the modem ─────────────────────────────────── */
+    /* ── Auto-metrics from the modem ─────────────────────────────────────
+     * Only included in the DIAGNOSTICS payload (v1/.../diagnostics).
+     * Sensor data and application metrics go to their own topics.
+     */
+    if (category == TOPIC_CAT_DIAGNOSTICS) {
     /*
      * modem_info_params_get() issues blocking AT commands (~10–50 ms).
      * We refresh every CONFIG_CONEXIO_CLOUD_MODEM_INFO_REFRESH publishes
@@ -1966,20 +2025,26 @@ skip_modem_metrics:;  /* jump target if modem_info_params_get fails */
     }
 #endif /* CONFIG_CONEXIO_CLOUD_AUTO_BATTERY */
 
-    /* ── Registered sensor callbacks ─────────────────────────────────── */
+    } /* end if (category == TOPIC_CAT_DIAGNOSTICS) */
+
+    /* ── Registered sensor callbacks (TELEMETRY topic only) ──────────── */
+    if (category == TOPIC_CAT_TELEMETRY) {
     for (int i = 0; i < sensor_count; i++) {
         if (!sensor_registry[i].used) continue;
         double val = sensor_registry[i].callback(sensor_registry[i].arg);
-        /* NaN signals "skip this reading this cycle" (sensor unavailable) */
         if (!isnan(val)) {
             cJSON_AddNumberToObject(metrics, sensor_registry[i].name, val);
         }
     }
+    } /* end TELEMETRY sensor callbacks */
 
     /* ── Application metrics from the queue ──────────────────────────── */
     k_mutex_lock(&queue_mutex, K_FOREVER);
     for (int i = 0; i < CONFIG_CONEXIO_CLOUD_METRIC_QUEUE_SIZE; i++) {
         if (!metric_queue[i].used) continue;
+
+        /* Only include metrics that belong to this payload's category */
+        if (metric_queue[i].category != category) continue;
 
         switch (metric_queue[i].type) {
         case 'n':
@@ -2005,10 +2070,11 @@ skip_modem_metrics:;  /* jump target if modem_info_params_get fails */
 
 #if defined(CONFIG_CONEXIO_CLOUD_LOG_STREAM)
     /* ── Cloud log stream ─────────────────────────────────────────────────
-     * Drain any buffered log entries into a "_log" array on the metrics
-     * object. Entries ride the regular telemetry publish — no extra MQTT
-     * message. The array is omitted entirely when the buffer is empty.    */
-    log_stream_drain(metrics);
+     * Only included in the LOGS payload (v1/.../logs).
+     * The array is omitted entirely when the buffer is empty. */
+    if (category == TOPIC_CAT_LOGS) {
+        log_stream_drain(metrics);
+    }
 #endif
 
     /* Serialise to a compact (no whitespace) JSON string.
@@ -2623,6 +2689,13 @@ int conexio_cloud_send_metric(const char *name, double value)
     metric_queue[slot].type    = 'n';
     metric_queue[slot].num_val = value;
     metric_queue[slot].used    = true;
+    /* Auto-tag _loc_* metrics to the location topic, everything else to
+     * telemetry. SDK internal metrics (_rssi, _reboot etc.) are added
+     * directly in build_payload_for_category under the diagnostics guard
+     * and never pass through this queue. */
+    metric_queue[slot].category = (strncmp(name, "_loc_", 5) == 0)
+                                  ? TOPIC_CAT_LOCATION
+                                  : TOPIC_CAT_TELEMETRY;
     k_mutex_unlock(&queue_mutex);
     return 0;
 }
@@ -2641,8 +2714,10 @@ int conexio_cloud_send_metric_str(const char *name, const char *value)
     if (slot == -1) { k_mutex_unlock(&queue_mutex); return -ENOMEM; }
     strncpy(metric_queue[slot].name,    name,  MAX_METRIC_NAME - 1);
     strncpy(metric_queue[slot].str_val, value, 63);
-    metric_queue[slot].type = 's';
-    metric_queue[slot].used = true;
+    metric_queue[slot].type     = 's';
+    metric_queue[slot].category = (strncmp(name, "_loc_", 5) == 0)
+                                  ? TOPIC_CAT_LOCATION : TOPIC_CAT_TELEMETRY;
+    metric_queue[slot].used     = true;
     k_mutex_unlock(&queue_mutex);
     return 0;
 }
@@ -2661,6 +2736,7 @@ int conexio_cloud_send_metric_bool(const char *name, bool value)
     if (slot == -1) { k_mutex_unlock(&queue_mutex); return -ENOMEM; }
     strncpy(metric_queue[slot].name, name, MAX_METRIC_NAME - 1);
     metric_queue[slot].type     = 'b';
+    metric_queue[slot].category = TOPIC_CAT_TELEMETRY;
     metric_queue[slot].bool_val = value;
     metric_queue[slot].used     = true;
     k_mutex_unlock(&queue_mutex);
@@ -2681,21 +2757,120 @@ int conexio_cloud_publish(void)
 {
     if (!transport_is_connected()) return -ENOTCONN;
 
-    char *payload = build_payload();
-    if (!payload) {
-        LOG_ERR("build_payload() returned NULL — out of heap memory?");
-        return -ENOMEM;
+    int overall = 0;
+
+    /* Publish each category to its own versioned topic.
+     * Skip categories that have nothing to send — build_payload_for_category
+     * will still produce a valid envelope, but we avoid unnecessary radio
+     * wakeups by checking for pending data first.
+     *
+     * Diagnostics: always publish (SDK auto-metrics fire every cycle).
+     * Telemetry:   publish only if sensor callbacks are registered or
+     *              app metrics are queued for this category.
+     * Location:    publish only if _loc_* metrics are queued.
+     * Logs:        publish only if log entries are pending.
+     */
+    static const char categories[] = {
+        TOPIC_CAT_DIAGNOSTICS,
+        TOPIC_CAT_TELEMETRY,
+        TOPIC_CAT_LOCATION,
+        TOPIC_CAT_LOGS,
+    };
+
+    for (int c = 0; c < (int)sizeof(categories); c++) {
+        char cat = categories[c];
+
+        /* Quick check: does this category have anything to send? */
+        bool has_data = false;
+
+        if (cat == TOPIC_CAT_DIAGNOSTICS) {
+            has_data = true; /* Always — SDK auto-metrics */
+        } else if (cat == TOPIC_CAT_LOGS) {
+#if defined(CONFIG_CONEXIO_CLOUD_LOG_STREAM)
+            has_data = (log_stream_pending() > 0);
+#endif
+        } else {
+            /* TELEMETRY or LOCATION — check queue and sensor registry */
+            if (cat == TOPIC_CAT_TELEMETRY && sensor_count > 0) {
+                has_data = true;
+            }
+            if (!has_data) {
+                k_mutex_lock(&queue_mutex, K_FOREVER);
+                for (int i = 0; i < CONFIG_CONEXIO_CLOUD_METRIC_QUEUE_SIZE; i++) {
+                    if (metric_queue[i].used && metric_queue[i].category == cat) {
+                        has_data = true;
+                        break;
+                    }
+                }
+                k_mutex_unlock(&queue_mutex);
+            }
+        }
+
+        if (!has_data) {
+            continue;
+        }
+
+        char *payload = build_payload_for_category(cat);
+        if (!payload) {
+            LOG_ERR("build_payload_for_category(%c) returned NULL", cat);
+            overall = -ENOMEM;
+            continue;
+        }
+
+        int ret = transport_publish_to(cat, payload, strlen(payload));
+        cJSON_free(payload);
+
+        if (ret != 0) {
+            LOG_WRN("Publish failed for category '%c' (%d)", cat, ret);
+            overall = ret;
+        }
     }
 
-    int ret = transport_publish(payload, strlen(payload));
-    cJSON_free(payload); /* Always free the heap-allocated JSON string */
-
-    if (ret == 0) {
-        /* Route PUBLISHED through the SDK internal handler so PSM sleep fires */
+    if (overall == 0) {
         struct conexio_cloud_event evt = { .type = CONEXIO_CLOUD_EVT_PUBLISHED };
         sdk_internal_event_handler(&evt);
+    }
+
+    return overall;
+}
+
+int conexio_cloud_publish_alert(const char *name, double value, double threshold)
+{
+    if (!name) return -EINVAL;
+    if (!transport_is_connected()) return -ENOTCONN;
+
+    /* Build a compact alert JSON envelope */
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "deviceId",  g_device_id);
+
+    char timestamp[40];
+    int64_t unix_ms;
+    if (date_time_now(&unix_ms) == 0) {
+        time_t t = (time_t)(unix_ms / 1000);
+        struct tm tm_buf;
+        struct tm *tm_val = gmtime_r(&t, &tm_buf);
+        snprintf(timestamp, sizeof(timestamp),
+                 "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ",
+                 tm_val->tm_year + 1900, tm_val->tm_mon + 1, tm_val->tm_mday,
+                 tm_val->tm_hour, tm_val->tm_min, tm_val->tm_sec,
+                 (int)(unix_ms % 1000));
     } else {
-        LOG_WRN("transport_publish failed (%d)", ret);
+        strncpy(timestamp, "1970-01-01T00:00:00.000Z", sizeof(timestamp));
+    }
+    cJSON_AddStringToObject(root, "timestamp", timestamp);
+    cJSON_AddStringToObject(root, "metric",    name);
+    cJSON_AddNumberToObject(root, "value",     value);
+    cJSON_AddNumberToObject(root, "threshold", threshold);
+
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!json) return -ENOMEM;
+
+    int ret = transport_publish_alert(json, strlen(json));
+    cJSON_free(json);
+
+    if (ret == 0) {
+        LOG_INF("Alert published: %s=%.2f (threshold=%.2f)", name, value, threshold);
     }
     return ret;
 }
