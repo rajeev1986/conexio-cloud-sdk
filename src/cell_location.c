@@ -201,7 +201,7 @@ static void process_cell_measurement(const struct lte_lc_cells_info *cells)
 		if (serialize_neighbors(cells->neighbor_cells,
 					cells->ncells_count,
 					nbuf, sizeof(nbuf))) {
-			conexio_cloud_send_metric_str("_loc_neighbors", nbuf);
+			conexio_cloud_send_metric_str("_loc_nbrs", nbuf);
 			LOG_DBG("cell_location: queued %u neighbour cells",
 				cells->ncells_count);
 		}

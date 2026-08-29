@@ -406,11 +406,11 @@ int main(void)
      * The SDK calls these before each publish — no send_metric in loop. */
     conexio_cloud_register_sensor("temperature", read_temperature, NULL);
     conexio_cloud_register_sensor("humidity",    read_humidity,    NULL);
-    /* _battery_mv from nPM1300 fuel gauge — replaces modem AT%XVBAT.
-     * Registered with the metric name "_battery_mv" so the SDK publishes
+    /* _batt_mv from nPM1300 fuel gauge — replaces modem AT%XVBAT.
+     * Registered with the metric name "_batt_mv" so the SDK publishes
      * it under that exact key rather than double-publishing alongside the
      * auto-battery metric (disabled via CONFIG_CONEXIO_CLOUD_AUTO_BATTERY=n). */
-    conexio_cloud_register_sensor("_battery_mv", read_battery_mv, NULL);
+    conexio_cloud_register_sensor("_batt_mv", read_battery_mv, NULL);
 
     /* ── Register application commands ───────────────────────────────
      * SDK built-ins: REBOOT, SET_INTERVAL, FIRMWARE_UPDATE

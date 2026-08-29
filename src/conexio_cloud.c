@@ -1633,8 +1633,8 @@ static char *build_payload_for_category(char category)
     cJSON *root    = cJSON_CreateObject();
     cJSON *metrics = cJSON_CreateObject();
 
-    cJSON_AddStringToObject(root, "deviceId",  g_device_id);
-    cJSON_AddStringToObject(root, "timestamp", timestamp);
+    cJSON_AddStringToObject(root, "dev_id",    g_device_id);
+    cJSON_AddStringToObject(root, "ts", timestamp);
 
     /* Sequence number — monotonically increasing per topic stream.
      * Lets the cloud detect gaps and reorder out-of-order delivery. */
@@ -1709,7 +1709,7 @@ static char *build_payload_for_category(char category)
             char operator_buf[MODEM_INFO_SHORT_OP_NAME_SIZE] = {0};
             if (modem_info_get_operator(operator_buf, sizeof(operator_buf)) == 0
                 && operator_buf[0] != '\0') {
-                cJSON_AddStringToObject(metrics, "_operator", operator_buf);
+                cJSON_AddStringToObject(metrics, "_op", operator_buf);
                 g_operator_sent = true;
             }
         }
@@ -1728,10 +1728,10 @@ static char *build_payload_for_category(char category)
                 modem_info_get_fw_version(modem_fw_buf, sizeof(modem_fw_buf));
             }
             if (modem_fw_buf[0] != '\0') {
-                cJSON_AddStringToObject(metrics, "_modem_fw", modem_fw_buf);
+                cJSON_AddStringToObject(metrics, "_mfw", modem_fw_buf);
             }
             /* _sdk_version — also first-publish-only */
-            cJSON_AddStringToObject(metrics, "_sdk_version", CONEXIO_SDK_VERSION);
+            cJSON_AddStringToObject(metrics, "_sdk", CONEXIO_SDK_VERSION);
             g_boot_metrics_sent = true;
         }
     }
@@ -1845,15 +1845,15 @@ skip_modem_metrics:;  /* jump target if modem_info_params_get fails */
                 modem_info_get_fw_version(modem_fw_buf, sizeof(modem_fw_buf));
             }
             if (modem_fw_buf[0] != '\0') {
-                cJSON_AddStringToObject(metrics, "_modem_fw", modem_fw_buf);
+                cJSON_AddStringToObject(metrics, "_mfw", modem_fw_buf);
             }
         }
-        cJSON_AddStringToObject(metrics, "_sdk_version", CONEXIO_SDK_VERSION);
-        /* _app_fw_version — application firmware version from VERSION file.
+        cJSON_AddStringToObject(metrics, "_sdk", CONEXIO_SDK_VERSION);
+        /* _fw_ver — application firmware version from VERSION file.
          * e.g. "1.0.0" built from VERSION_MAJOR/MINOR/PATCHLEVEL in app/VERSION.
          * Distinct from _sdk_version (Conexio SDK library version).
          * Tracked by the cloud and displayed in Fleet Health → Device Identity. */
-        cJSON_AddStringToObject(metrics, "_app_fw_version", CONEXIO_APP_FW_VERSION);
+        cJSON_AddStringToObject(metrics, "_fw_ver", CONEXIO_APP_FW_VERSION);
         /* _session_id — random 32-bit hex, unique per power-on session.
          * Lets the cloud correlate all packets from one boot across MQTT
          * reconnects without a flash write. Generated in conexio_cloud_init(). */
@@ -1869,7 +1869,7 @@ skip_modem_metrics:;  /* jump target if modem_info_params_get fails */
             char operator_buf[MODEM_INFO_SHORT_OP_NAME_SIZE] = {0};
             if (modem_info_get_operator(operator_buf, sizeof(operator_buf)) == 0
                 && operator_buf[0] != '\0') {
-                cJSON_AddStringToObject(metrics, "_operator", operator_buf);
+                cJSON_AddStringToObject(metrics, "_op", operator_buf);
                 s_operator_sent = true;
             }
         }
@@ -1969,7 +1969,7 @@ skip_modem_metrics:;  /* jump target if modem_info_params_get fails */
      * Omitted on the very first publish (both are 0 — meaningless noise).
      * From the second publish onward the counter reflects real history. */
     if (g_publish_success_count > 0 || g_publish_fail_count > 0) {
-        cJSON_AddNumberToObject(metrics, "_publish_success_count",
+        cJSON_AddNumberToObject(metrics, "_pub_ok",
                                 (double)g_publish_success_count);
         if (g_publish_fail_count > 0) {
             cJSON_AddNumberToObject(metrics, "_publish_fail_count",
@@ -1987,7 +1987,7 @@ skip_modem_metrics:;  /* jump target if modem_info_params_get fails */
         bool is_charging = false;
         float soc = battery_read_soc(&is_charging);
         if (soc >= 0.0f) {
-            cJSON_AddNumberToObject(metrics, "_battery_soc_pct", (double)soc);
+            cJSON_AddNumberToObject(metrics, "_batt_soc", (double)soc);
 
             int64_t now_ms = k_uptime_get();
             if (!is_charging && g_last_soc_pct >= 0.0f && g_last_pub_time_ms > 0) {
@@ -1998,7 +1998,7 @@ skip_modem_metrics:;  /* jump target if modem_info_params_get fails */
                      * Negative values mean SOC went up — charger was removed
                      * and reconnected mid-interval, not a meaningful reading. */
                     if (drain > 0.0f) {
-                        cJSON_AddNumberToObject(metrics, "_battery_drain_pct_hr",
+                        cJSON_AddNumberToObject(metrics, "_batt_drain_hr",
                                                 (double)drain);
                     }
                 }
@@ -2020,7 +2020,7 @@ skip_modem_metrics:;  /* jump target if modem_info_params_get fails */
     {
         int bat_mv = 0;
         if (modem_info_get_batt_voltage(&bat_mv) == 0 && bat_mv > 0) {
-            cJSON_AddNumberToObject(metrics, "_battery_mv", (double)bat_mv);
+            cJSON_AddNumberToObject(metrics, "_batt_mv", (double)bat_mv);
         }
     }
 #endif /* CONFIG_CONEXIO_CLOUD_AUTO_BATTERY */
@@ -2841,7 +2841,7 @@ int conexio_cloud_publish_alert(const char *name, double value, double threshold
 
     /* Build a compact alert JSON envelope */
     cJSON *root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "deviceId",  g_device_id);
+    cJSON_AddStringToObject(root, "dev_id",  g_device_id);
 
     char timestamp[40];
     int64_t unix_ms;
@@ -2857,7 +2857,7 @@ int conexio_cloud_publish_alert(const char *name, double value, double threshold
     } else {
         strncpy(timestamp, "1970-01-01T00:00:00.000Z", sizeof(timestamp));
     }
-    cJSON_AddStringToObject(root, "timestamp", timestamp);
+    cJSON_AddStringToObject(root, "ts", timestamp);
     cJSON_AddStringToObject(root, "metric",    name);
     cJSON_AddNumberToObject(root, "value",     value);
     cJSON_AddNumberToObject(root, "threshold", threshold);
