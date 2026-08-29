@@ -2884,15 +2884,16 @@ int conexio_cloud_publish_alert(const char *name, double value, double threshold
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "dev_id",  g_device_id);
 
-    char timestamp[40];
+    char timestamp[32];   /* "2026-08-29T01:42:23.123Z" = 24 chars + null */
     int64_t unix_ms;
     if (date_time_now(&unix_ms) == 0) {
         time_t t = (time_t)(unix_ms / 1000);
         struct tm tm_buf;
         struct tm *tm_val = gmtime_r(&t, &tm_buf);
+        int year = CLAMP(tm_val->tm_year + 1900, 2020, 2099); /* bound year → 4 digits */
         snprintf(timestamp, sizeof(timestamp),
                  "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ",
-                 tm_val->tm_year + 1900, tm_val->tm_mon + 1, tm_val->tm_mday,
+                 year, tm_val->tm_mon + 1, tm_val->tm_mday,
                  tm_val->tm_hour, tm_val->tm_min, tm_val->tm_sec,
                  (int)(unix_ms % 1000));
     } else {
