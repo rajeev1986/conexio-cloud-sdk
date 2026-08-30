@@ -1082,8 +1082,28 @@ static void sdk_internal_event_handler(const struct conexio_cloud_event *evt)
     case CONEXIO_CLOUD_EVT_PUBLISHED:
         LOG_DBG("Telemetry published");
 #if defined(CONFIG_CONEXIO_CLOUD_PSM)
-        /* Publishing is done — allow the modem to enter PSM sleep.
-         * The modem will wake autonomously at the next TAU interval. */
+        /*
+         * Disconnect MQTT cleanly before the modem enters PSM sleep.
+         *
+         * Rationale: MQTT keepalive is CONFIG_CONEXIO_CLOUD_MQTT_KEEPALIVE_SEC
+         * (default 120s). The broker (AWS IoT Core) will force-disconnect the
+         * client if no PINGREQ arrives within 1.5 × keepalive = ~180s.
+         * With a PSM TAU of 3600s, the broker disconnects ~3 min into sleep
+         * anyway — so we disconnect cleanly now instead:
+         *  - Saves the broker from keeping a stale session open
+         *  - Avoids any race where the transport thread sends a late PINGREQ
+         *    just as the modem is entering sleep (brief spurious radio wakeup)
+         *  - Clean disconnect + reconnect on wake is deterministic
+         *
+         * Note: transport_on_disconnected() will fire and call retry_on_failure().
+         * retry_on_failure() must NOT trigger a reconnect here — we are
+         * intentionally sleeping. The retry module's failure counter is reset
+         * after a successful publish, so this is a fresh cycle.
+         */
+        if (transport_is_connected()) {
+            LOG_DBG("Disconnecting MQTT before PSM sleep");
+            transport_disconnect();
+        }
         power_mgr_sleep();
 #endif
         break;

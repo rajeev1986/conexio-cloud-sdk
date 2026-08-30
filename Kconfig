@@ -535,8 +535,13 @@ config CONEXIO_CLOUD_PSM_TAU_SEC
 	range 60 604800
 	depends on CONEXIO_CLOUD_PSM
 	help
-	  How often the modem sends a keepalive (T3412 timer) to the network.
-	  Set to at least 2× your telemetry interval to avoid extra radio wakeups.
+	  How often the modem wakes from PSM to send an LTE keepalive (T3412 timer).
+	  CRITICAL: This value must be <= CONFIG_CONEXIO_CLOUD_INTERVAL_SEC.
+	  The modem only wakes on TAU expiry — if TAU > INTERVAL the device will
+	  publish once per TAU, not once per interval. Set TAU = INTERVAL for a
+	  1:1 publish-per-wake cycle. Increasing TAU beyond the interval does NOT
+	  save power if the device needs to wake for telemetry anyway.
+	  Example: INTERVAL=3600, TAU=3600 → wake every hour, publish, sleep.
 	  Maximum matches INTERVAL_SEC ceiling (7 days) for ultra-low-power deployments.
 
 config CONEXIO_CLOUD_PSM_ACTIVE_TIME_SEC

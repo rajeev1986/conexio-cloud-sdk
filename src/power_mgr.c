@@ -136,7 +136,13 @@ int power_mgr_init(const struct power_mgr_config *cfg)
         int active_units = CLAMP(cfg->psm_active_time_sec / 2, 0, 31);
         snprintf(active_str, sizeof(active_str), "00000%02d", active_units);
 
-        int ret = lte_lc_psm_req(true);
+        int ret = lte_lc_psm_param_set(tau_str, active_str);
+        if (ret) {
+            LOG_WRN("lte_lc_psm_param_set failed (%d) — "
+                    "falling back to NCS Kconfig timer values", ret);
+        }
+
+        ret = lte_lc_psm_req(true);
         if (ret) {
             LOG_WRN("lte_lc_psm_req failed (%d)", ret);
         }
@@ -212,11 +218,11 @@ void power_mgr_sleep(void)
     if (!g_psm_active) return;
     /*
      * PSM entry is automatic after the T3324 active timer expires.
-     * There's nothing to call — the modem handles it.
-     * This function exists as a hook for future explicit sleep control
-     * (e.g. AT+CFUN=0 for deep sleep between long intervals).
+     * The MQTT disconnect before sleep is handled in conexio_cloud.c
+     * (sdk_internal_event_handler EVT_PUBLISHED case) which has access
+     * to both power_mgr and transport contexts.
      */
-    LOG_DBG("Transmission complete — modem will enter PSM after active window");
+    LOG_DBG("Transmission complete — MQTT will be disconnected, modem entering PSM");
 }
 
 bool power_mgr_is_psm_active(void)
