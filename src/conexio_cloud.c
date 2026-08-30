@@ -497,6 +497,7 @@ static void ntp_event_handler(const struct date_time_evt *evt)
  *   0x0002 = reboot reason    (this file)
  *   0x0003 = schedule watchdog active flag  (this file)
  *   0x0004 = schedule watchdog record       (this file)
+ *   0x0005 = publish interval override      (this file) ← new
  *   0x0010-0x0012 = offline buffer metadata
  *   0x2000+ = offline buffer entries
  */
@@ -504,6 +505,10 @@ static void ntp_event_handler(const struct date_time_evt *evt)
 #define REBOOT_REASON_NVS_ID     0x0002U
 #define SCHED_WDT_ACTIVE_NVS_ID  0x0003U
 #define SCHED_WDT_RECORD_NVS_ID  0x0004U
+/* Persists the runtime publish interval override (SET_INTERVAL / telemetryIntervalSec).
+ * Stored as int32_t. Written on every successful interval change.
+ * Read on boot to restore the last OTA-configured interval. */
+#define INTERVAL_OVERRIDE_NVS_ID 0x0005U
 
 static struct nvs_fs reboot_nvs;
 static bool nvs_initialised = false;
@@ -560,6 +565,35 @@ static void reboot_counter_init(void)
 #if defined(CONFIG_NVS)
     g_reboot_cnt = load_and_increment_reboot_count();
     LOG_INF("Reboot counter: %u (persisted in NVS)", g_reboot_cnt);
+
+    /* ── Restore persisted publish interval ────────────────────────────────
+     * If SET_INTERVAL or telemetryIntervalSec was applied in a previous
+     * session, restore it now so the device wakes at the same cadence after
+     * a reboot (FOTA, watchdog, power cycle, etc.).
+     * -ENOENT on first boot is normal — stay at CONFIG_CONEXIO_CLOUD_INTERVAL_SEC. */
+    {
+        int32_t stored_interval = 0;
+        ssize_t r = nvs_read(&reboot_nvs, INTERVAL_OVERRIDE_NVS_ID,
+                             &stored_interval, sizeof(stored_interval));
+        if (r > 0 && stored_interval >= 1) {
+            /* Apply bounds from conexio_cloud_register_interval() if already called.
+             * g_interval_min/max may still be defaults (10 / INT_MAX) at this
+             * point — the application calls register_interval() BEFORE init,
+             * so the values are available here. */
+            if (stored_interval >= g_interval_min_sec &&
+                stored_interval <= g_interval_max_sec) {
+                g_sdk_interval_sec = (int)stored_interval;
+                LOG_INF("Publish interval restored from NVS: %ds", g_sdk_interval_sec);
+            } else {
+                /* Stored value violates current app limits — clear it and use default */
+                LOG_WRN("NVS interval %ds outside registered bounds [%d, %d] "
+                        "— resetting to Kconfig default %ds",
+                        (int)stored_interval, g_interval_min_sec,
+                        g_interval_max_sec, CONFIG_CONEXIO_CLOUD_INTERVAL_SEC);
+                nvs_delete(&reboot_nvs, INTERVAL_OVERRIDE_NVS_ID);
+            }
+        }
+    }
 
     /* ── Session Run ID ────────────────────────────────────────────────────
      * Generate a random 32-bit value using the hardware RNG. Formatted as
@@ -946,16 +980,73 @@ static void sdk_internal_event_handler(const struct conexio_cloud_event *evt)
 #if defined(CONFIG_CONEXIO_CLOUD_OFFLINE_BUFFER)
         /* Replay any payloads that were buffered while the device was offline.
          * Sends up to CONFIG_CONEXIO_CLOUD_OFFLINE_REPLAY_BATCH per session
-         * to avoid flooding the server after a long outage. */
+         * to avoid flooding the server after a long outage.
+         * Payloads older than CONFIG_CONEXIO_CLOUD_OFFLINE_BUFFER_TTL_SEC are
+         * discarded silently to prevent stale data polluting the cloud. */
         if (!offline_buffer_is_empty()) {
             int pending = offline_buffer_count();
             LOG_INF("Offline buffer: replaying %d payload(s)", pending);
             int replayed = 0;
+            int discarded = 0;
+
+#if CONFIG_CONEXIO_CLOUD_OFFLINE_BUFFER_TTL_SEC > 0
+            /* Capture current time once for all TTL comparisons this session. */
+            int64_t now_ms = 0;
+            bool have_time = (date_time_now(&now_ms) == 0);
+#endif
+
             while (!offline_buffer_is_empty() &&
                    replayed < CONFIG_CONEXIO_CLOUD_OFFLINE_REPLAY_BATCH) {
                 char buf[OFFLINE_BUFFER_ENTRY_MAX];
                 size_t buf_len;
                 if (offline_buffer_peek(buf, &buf_len) != 0) break;
+
+#if CONFIG_CONEXIO_CLOUD_OFFLINE_BUFFER_TTL_SEC > 0
+                /* ── TTL check ─────────────────────────────────────────────
+                 * Parse the "timestamp" (v2 SDK) or "ts" (v1 SDK) field from
+                 * the buffered JSON.  If the payload is older than the TTL,
+                 * pop it without publishing so stale data never reaches the
+                 * cloud — especially important after long offline periods or
+                 * when the device had a misconfigured short publish interval. */
+                if (have_time) {
+                    cJSON *entry = cJSON_ParseWithLength(buf, buf_len);
+                    if (entry) {
+                        const cJSON *ts_item = cJSON_GetObjectItemCaseSensitive(entry, "timestamp");
+                        if (!ts_item) {
+                            ts_item = cJSON_GetObjectItemCaseSensitive(entry, "ts");
+                        }
+                        if (cJSON_IsString(ts_item) && ts_item->valuestring) {
+                            /* Parse ISO-8601 "YYYY-MM-DDTHH:MM:SS.mmmZ" */
+                            struct tm t = {0};
+                            int yr, mo, dy, hr, mi, sc;
+                            if (sscanf(ts_item->valuestring,
+                                       "%4d-%2d-%2dT%2d:%2d:%2d",
+                                       &yr, &mo, &dy, &hr, &mi, &sc) == 6) {
+                                t.tm_year = yr - 1900;
+                                t.tm_mon  = mo - 1;
+                                t.tm_mday = dy;
+                                t.tm_hour = hr;
+                                t.tm_min  = mi;
+                                t.tm_sec  = sc;
+                                int64_t payload_epoch = utc_tm_to_epoch(&t);
+                                int64_t now_epoch     = now_ms / 1000LL;
+                                int64_t age_sec       = now_epoch - payload_epoch;
+                                if (age_sec > CONFIG_CONEXIO_CLOUD_OFFLINE_BUFFER_TTL_SEC) {
+                                    LOG_DBG("Offline replay: discarding payload aged %llds "
+                                            "(TTL=%ds)", (long long)age_sec,
+                                            CONFIG_CONEXIO_CLOUD_OFFLINE_BUFFER_TTL_SEC);
+                                    cJSON_Delete(entry);
+                                    offline_buffer_pop();
+                                    discarded++;
+                                    continue;
+                                }
+                            }
+                        }
+                        cJSON_Delete(entry);
+                    }
+                }
+#endif /* OFFLINE_BUFFER_TTL_SEC > 0 */
+
                 /* Publish the buffered raw payload directly via transport
                  * rather than rebuilding — preserves original timestamp. */
                 if (transport_publish(buf, buf_len) != 0) {
@@ -968,7 +1059,8 @@ static void sdk_internal_event_handler(const struct conexio_cloud_event *evt)
                 retry_kick_watchdog();
 #endif
             }
-            LOG_INF("Offline replay: sent %d/%d payloads", replayed, pending);
+            LOG_INF("Offline replay: sent %d, discarded %d (TTL), %d remaining",
+                    replayed, discarded, offline_buffer_count());
         }
 #endif /* CONFIG_CONEXIO_CLOUD_OFFLINE_BUFFER */
 
@@ -1058,6 +1150,16 @@ static void builtin_on_set_interval(const char *payload_json, void *arg)
         if (new_sec >= g_interval_min_sec && new_sec <= g_interval_max_sec) {
             g_sdk_interval_sec = new_sec;
             LOG_INF("SET_INTERVAL: publish interval → %ds", new_sec);
+#if defined(CONFIG_NVS)
+            /* Persist so the interval survives reboots. */
+            if (nvs_initialised) {
+                int32_t stored = (int32_t)new_sec;
+                nvs_write(&reboot_nvs, INTERVAL_OVERRIDE_NVS_ID,
+                          &stored, sizeof(stored));
+                LOG_DBG("SET_INTERVAL: persisted %ds to NVS key 0x%04x",
+                        new_sec, INTERVAL_OVERRIDE_NVS_ID);
+            }
+#endif
         } else {
             LOG_WRN("SET_INTERVAL: %d out of range [%d, %d] — ignoring",
                     new_sec, g_interval_min_sec, g_interval_max_sec);
@@ -1083,6 +1185,15 @@ static enum conexio_setting_status builtin_on_interval_setting(int32_t value, vo
     }
     g_sdk_interval_sec = (int)value;
     LOG_INF("SDK: telemetryIntervalSec → %ds", g_sdk_interval_sec);
+#if defined(CONFIG_NVS)
+    /* Persist so the interval survives reboots — same NVS key as SET_INTERVAL. */
+    if (nvs_initialised) {
+        int32_t stored = (int32_t)value;
+        nvs_write(&reboot_nvs, INTERVAL_OVERRIDE_NVS_ID, &stored, sizeof(stored));
+        LOG_DBG("telemetryIntervalSec: persisted %ds to NVS key 0x%04x",
+                (int)value, INTERVAL_OVERRIDE_NVS_ID);
+    }
+#endif
     return CONEXIO_SETTING_OK;
 }
 

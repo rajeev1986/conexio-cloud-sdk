@@ -496,6 +496,21 @@ config CONEXIO_CLOUD_OFFLINE_BUFFER_FULL_CB
 	  storage is exhausted.
 	  Register with: conexio_cloud_register_offline_buffer_full_cb(cb).
 
+config CONEXIO_CLOUD_OFFLINE_BUFFER_TTL_SEC
+	int "Max age (seconds) of buffered payloads during replay"
+	default 86400
+	range 0 2592000
+	depends on CONEXIO_CLOUD_OFFLINE_BUFFER
+	help
+	  Buffered payloads older than this value are silently discarded during
+	  offline replay instead of being published to the cloud.
+	  This prevents stale data from polluting dashboards and time-series
+	  charts after the device was offline for a long period.
+	  Default: 86400 (24 hours). Set to 0 to disable TTL filtering
+	  (replay all entries regardless of age, original behaviour).
+	  The payload timestamp field ("ts" or "timestamp") is parsed for
+	  the age check — no additional flash storage is required.
+
 endmenu # Offline Buffer
 
 # ── Power manager — LTE PSM / eDRX ───────────────────────────────────────────
