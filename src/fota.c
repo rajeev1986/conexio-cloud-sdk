@@ -72,25 +72,28 @@ void fota_set_can_start_cb(fota_can_start_cb_t cb)
  * NVS before the reboot so fota_check_and_execute() can publish SUCCEEDED
  * on the first MQTT connect of the new firmware.
  *
- * NVS key 0x0005 is reserved for this purpose.
+ * NVS key 0x0007 is reserved for this purpose.
  * Layout in NVS record: "<device_id>\n<job_id>\0"  (max 32+1+64+1 = 98 bytes)
  *
- * NVS key allocation (from conexio_cloud.c comment):
+ * NVS key allocation:
  *   0x0001 reboot counter
  *   0x0002 reboot reason
  *   0x0003 schedule watchdog active flag
  *   0x0004 schedule watchdog record
- *   0x0005 FOTA pending SUCCEEDED  ← this file
+ *   0x0005 publish interval override     (conexio_cloud.c)
+ *   0x0006 (reserved)
+ *   0x0007 FOTA pending SUCCEEDED  ← this file
+ *   0x0008 FOTA installed version  ← this file
  *   0x0010–0x0012, 0x2000+ offline buffer
  */
-#define FOTA_PENDING_NVS_ID  0x0005U
+#define FOTA_PENDING_NVS_ID  0x0007U
 #define FOTA_PENDING_MAX     98U    /* device_id(31) + '\n'(1) + job_id(63) + '\0'(1) + margin */
 
-/* NVS key 0x0006 — stores the last successfully installed firmware version.
+/* NVS key 0x0008 — stores the last successfully installed firmware version.
  * Written by fota_confirm() after MCUboot confirmation. Read by execute_job()
  * to skip the download when the requested version is already installed.
  * Prevents re-downloading a binary the device already runs (idempotency). */
-#define FOTA_INSTALLED_VER_NVS_ID  0x0006U
+#define FOTA_INSTALLED_VER_NVS_ID  0x0008U
 #define FOTA_INSTALLED_VER_MAX     32U   /* matches APP_VERSION_STRING max */
 
 #define NVS_PARTITION        storage_partition

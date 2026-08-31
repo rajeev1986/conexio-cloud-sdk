@@ -522,7 +522,10 @@ static void ntp_event_handler(const struct date_time_evt *evt)
  *   0x0002 = reboot reason    (this file)
  *   0x0003 = schedule watchdog active flag  (this file)
  *   0x0004 = schedule watchdog record       (this file)
- *   0x0005 = publish interval override      (this file) ← new
+ *   0x0005 = publish interval override      (this file)
+ *   0x0006 = (reserved)
+ *   0x0007 = FOTA pending SUCCEEDED         (fota.c)
+ *   0x0008 = FOTA installed version         (fota.c)
  *   0x0010-0x0012 = offline buffer metadata
  *   0x2000+ = offline buffer entries
  */
