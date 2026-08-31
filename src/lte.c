@@ -142,7 +142,10 @@ static void lte_evt_handler(const struct lte_lc_evt *const evt)
         g_metrics.psm_tau_sec         = evt->psm_cfg.tau;
         g_metrics.psm_active_time_sec = evt->psm_cfg.active_time;
         if (evt->psm_cfg.active_time == -1) {
-            LOG_INF("PSM: network did not grant PSM (TAU=%ds)",
+            /* active_time=-1 means the network hasn't confirmed PSM yet —
+             * a second PSM_UPDATE with the real grant typically follows
+             * within 100-500ms (normal on AT&T LTE-M). */
+            LOG_DBG("PSM: pending network grant (TAU=%ds, active not yet set)",
                     evt->psm_cfg.tau);
         } else {
             LOG_INF("PSM granted: TAU=%ds, active=%ds",
