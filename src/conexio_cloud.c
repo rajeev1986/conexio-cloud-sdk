@@ -190,6 +190,27 @@ static float    g_last_soc_pct      = -1.0f;  /* float — preserves sub-percent
 static int64_t  g_last_pub_time_ms  =  0;
 static double   g_last_battery_mv   = NAN; /* voltage from most recent fuel gauge read */
 
+/* ── Cached RSRP — updated asynchronously via %CESQ notification ─────────
+ * The modem pushes a %CESQ notification whenever it measures a new signal
+ * quality value. We cache the latest valid RSRP index here so build_payload()
+ * always has a fresh value, even right after PSM wake when AT+CESQ
+ * (polled via modem_info_params_get) may still return 255 (not measured yet).
+ * INT16_MIN = "never received a valid reading" sentinel. */
+#define RSRP_NOT_KNOWN_IDX  255
+#define RSRP_CACHE_INVALID  INT16_MIN
+static int16_t  g_cached_rsrp_idx  = RSRP_CACHE_INVALID;
+
+/* Called by modem_info whenever the modem pushes a fresh %CESQ notification.
+ * The value is the raw RSRP index (not dBm). 255 = not measured — discard. */
+static void on_rsrp_notification(char rsrp_value)
+{
+    uint8_t idx = (uint8_t)rsrp_value;
+    if (idx != RSRP_NOT_KNOWN_IDX) {
+        g_cached_rsrp_idx = (int16_t)idx;
+        LOG_DBG("RSRP updated: idx=%d", idx);
+    }
+}
+
 #if defined(CONFIG_CONEXIO_CLOUD_BATTERY_METRICS)
 /** Returns the battery voltage (mV) cached by the last fuel gauge read.
  *  Returns NAN if no fuel gauge read has occurred yet this session.
@@ -1814,15 +1835,22 @@ static char *build_payload_for_category(char category)
                             CONFIG_CONEXIO_CLOUD_MODEM_INFO_REFRESH;
 
     /* ── Signal quality ───────────────────────────────────────────────
-     * _rssi: RSRP index from modem. Convert to dBm on the cloud side:
-     *   idx < 0 → idx-140,  idx > 0 → idx-141.  Range: ~-44 to -156 dBm.
-     *   255 = LTE_LC_CELL_RSRP_INVALID — modem hasn't measured yet
-     *         (common right after PSM wake). Skip rather than send garbage.
-     * _snr:  SNR index.  SNR_IDX_TO_DB(x) = x-24 gives dB value.
-     *   127 = SNR_UNAVAILABLE (modem could not measure). */
+     * _rssi: RSRP index. Prefer the async-cached value (updated via %CESQ
+     * push notification) which is always fresh. Fall back to the polled
+     * value from modem_info_params_get() if no notification received yet.
+     * Skip entirely if both are invalid (255 = not measured).
+     * Cloud converts index to dBm: idx < 0 → idx-140, idx > 0 → idx-141.
+     * _snr: SNR index. SNR_IDX_TO_DB(x) = x-24. 127 = unavailable. */
     {
-        int rsrp_val = (int)cached_modem_param.network.rsrp.value;
-        if (rsrp_val != 255) {  /* 255 = LTE_LC_CELL_RSRP_INVALID */
+        int rsrp_val;
+        if (g_cached_rsrp_idx != RSRP_CACHE_INVALID) {
+            /* Use the freshest async notification value */
+            rsrp_val = (int)g_cached_rsrp_idx;
+        } else {
+            /* Fall back to the polled value from modem_info_params_get */
+            rsrp_val = (int)cached_modem_param.network.rsrp.value;
+        }
+        if (rsrp_val != RSRP_NOT_KNOWN_IDX) {
             cJSON_AddNumberToObject(metrics, "_rssi", (double)rsrp_val);
         }
     }
@@ -2574,6 +2602,13 @@ int conexio_cloud_init(conexio_cloud_event_cb_t cb)
     if (modem_info_connectivity_stats_init() != 0) {
         LOG_WRN("modem_info_connectivity_stats_init failed — _tx_kb/_rx_kb unavailable");
     }
+
+    /* Subscribe to %CESQ push notifications so g_cached_rsrp_idx is always
+     * fresh. The modem sends %CESQ every time it measures signal quality —
+     * typically every 5-10s while active. Using the cached value at publish
+     * time avoids the race where AT+CESQ (polled in modem_info_params_get)
+     * returns 255 right after PSM wake before the first measurement. */
+    modem_info_rsrp_register(on_rsrp_notification);
 
 #if defined(CONFIG_CONEXIO_CLOUD_BATTERY_METRICS)
     battery_metrics_init();
