@@ -194,6 +194,12 @@ static double   g_last_battery_mv   = NAN; /* voltage from most recent fuel gaug
  * event handler knows to skip retry_on_failure(). Cleared after use. */
 static bool g_intentional_disconnect = false;
 
+/* Set when we intentionally disconnected to allow PSM sleep entry.
+ * Prevents the cloud thread from reconnecting during the T3324 active window
+ * (the ~30s between our disconnect and LTE_LC_EVT_MODEM_SLEEP_ENTER).
+ * Cleared when power_mgr_is_psm_active() returns true (modem confirmed sleeping). */
+static bool g_waiting_for_psm_sleep = false;
+
 /* ── Cached RSRP — updated asynchronously via %CESQ notification ─────────
  * The modem pushes a %CESQ notification whenever it measures a new signal
  * quality value. We cache the latest valid RSRP index here so build_payload()
@@ -1140,11 +1146,10 @@ static void sdk_internal_event_handler(const struct conexio_cloud_event *evt)
         if (transport_is_connected()) {
             LOG_DBG("Disconnecting MQTT before PSM sleep");
 #if defined(CONFIG_CONEXIO_CLOUD_RETRY)
-            /* Signal to the DISCONNECTED handler that this is intentional
-             * so retry_on_failure() is skipped — no backoff, no reconnect. */
             g_intentional_disconnect = true;
-            retry_on_success();  /* reset counter so wake-reconnect starts clean */
+            retry_on_success();
 #endif
+            g_waiting_for_psm_sleep = true;
             transport_disconnect();
         }
         power_mgr_sleep();
@@ -2281,12 +2286,13 @@ static void cloud_thread_fn(void *a, void *b, void *c)
 
 #if defined(CONFIG_CONEXIO_CLOUD_PSM)
         if (power_mgr_is_psm_active()) {
+            /* Modem has confirmed PSM sleep entry — safe to clear the
+             * waiting flag and block here until the next TAU wake. */
+            g_waiting_for_psm_sleep = false;
             /* Wait up to 120s — some NB-IoT networks take 60-120s to re-register.
              * 30s was too short and caused spurious "wake timeout" warnings. */
             if (power_mgr_wake(120) != 0) {
                 LOG_WRN("PSM wake timeout (120s) — modem may be struggling to register");
-                /* Still try to reconnect below; transport_connect() will handle
-                 * the case where LTE is not yet ready. */
             }
             /* Modem just woke from PSM — drain any queued commands before
              * publishing. AWS may have queued messages during the sleep. */
@@ -2294,6 +2300,15 @@ static void cloud_thread_fn(void *a, void *b, void *c)
             for (int drain = 0; drain < 10; drain++) {
                 transport_poll(K_MSEC(200));
             }
+        }
+
+        /* Waiting for modem to enter PSM sleep — do not reconnect yet.
+         * The T3324 active window (~30s) will expire and MODEM_SLEEP_ENTER
+         * will fire, setting power_mgr_is_psm_active() true. Until then
+         * just poll slowly to keep the watchdog fed without reconnecting. */
+        if (g_waiting_for_psm_sleep) {
+            transport_poll(K_MSEC(500));
+            continue;
         }
 #endif
 
@@ -3054,12 +3069,10 @@ int conexio_cloud_publish(void)
     }
 
     if (overall == 0) {
-        /* Poll briefly to allow PUBACK to arrive before firing EVT_PUBLISHED.
-         * QoS 1 PUBACK from AWS IoT Core typically arrives in 50-200ms.
-         * Without this poll, EVT_PUBLISHED fires immediately after mqtt_publish()
-         * returns — before PUBACK — causing the pre-sleep disconnect to happen
-         * while the broker is still waiting to deliver the PUBACK. */
-        transport_poll(K_MSEC(500));
+        /* Poll to allow PUBACK to arrive before firing EVT_PUBLISHED.
+         * QoS 1 PUBACK from AWS IoT Core typically arrives in 50-300ms
+         * but can take up to 1s on congested networks. */
+        transport_poll(K_MSEC(1500));
         struct conexio_cloud_event evt = { .type = CONEXIO_CLOUD_EVT_PUBLISHED };
         sdk_internal_event_handler(&evt);
     }
