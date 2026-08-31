@@ -194,12 +194,6 @@ static double   g_last_battery_mv   = NAN; /* voltage from most recent fuel gaug
  * event handler knows to skip retry_on_failure(). Cleared after use. */
 static bool g_intentional_disconnect = false;
 
-/* Set when we intentionally disconnected to allow PSM sleep entry.
- * Prevents the cloud thread from reconnecting during the T3324 active window
- * (the ~30s between our disconnect and LTE_LC_EVT_MODEM_SLEEP_ENTER).
- * Cleared when power_mgr_is_psm_active() returns true (modem confirmed sleeping). */
-static bool g_waiting_for_psm_sleep = false;
-
 /* ── Cached RSRP — updated asynchronously via %CESQ notification ─────────
  * The modem pushes a %CESQ notification whenever it measures a new signal
  * quality value. We cache the latest valid RSRP index here so build_payload()
@@ -1144,38 +1138,16 @@ static void sdk_internal_event_handler(const struct conexio_cloud_event *evt)
          * after a successful publish, so this is a fresh cycle.
          */
         if (transport_is_connected()) {
-            /* Only disconnect for PSM sleep if the network-granted TAU is
-             * close enough to the publish interval. If TAU >> INTERVAL
-             * (e.g. AT&T grants 3.5h but interval is 60s), entering PSM
-             * would mean the device sleeps for TAU seconds instead of
-             * waking at the interval. In that case, stay connected —
-             * the MQTT keepalive will keep the session alive and the
-             * interval timer fires normally.
-             *
-             * Rule: disconnect for PSM only when TAU <= (2 × interval).
-             * With TAU=3600 and INTERVAL=3600 → sleep (TAU == INTERVAL).
-             * With TAU=12000 and INTERVAL=60   → stay connected (TAU >> INTERVAL).
-             * With TAU=7200  and INTERVAL=3600 → sleep (TAU = 2 × INTERVAL). */
-            const struct conexio_lte_session_metrics *lm =
-                conexio_lte_get_session_metrics();
-            int granted_tau = (lm && lm->psm_tau_sec > 0)
-                              ? (int)lm->psm_tau_sec : 0;
-            bool tau_compatible = (granted_tau == 0) ||
-                                  (granted_tau <= 2 * g_sdk_interval_sec);
-
-            if (tau_compatible) {
-                LOG_DBG("Disconnecting MQTT before PSM sleep "
-                        "(TAU=%ds, interval=%ds)", granted_tau, g_sdk_interval_sec);
+            /* Disconnect MQTT cleanly before PSM sleep.
+             * The modem will enter PSM sleep automatically after the T3324
+             * active timer expires (~30s). On the next interval, transport_connect()
+             * brings the radio back up naturally. */
+            LOG_DBG("Disconnecting MQTT before PSM sleep");
 #if defined(CONFIG_CONEXIO_CLOUD_RETRY)
-                g_intentional_disconnect = true;
-                retry_on_success();
+            g_intentional_disconnect = true;
+            retry_on_success();
 #endif
-                g_waiting_for_psm_sleep = true;
-                transport_disconnect();
-            } else {
-                LOG_DBG("Staying connected — TAU=%ds >> interval=%ds, "
-                        "PSM sleep skipped", granted_tau, g_sdk_interval_sec);
-            }
+            transport_disconnect();
         }
         power_mgr_sleep();
 #endif
@@ -2310,37 +2282,11 @@ static void cloud_thread_fn(void *a, void *b, void *c)
 #endif
 
 #if defined(CONFIG_CONEXIO_CLOUD_PSM)
-        if (power_mgr_is_psm_active()) {
-            /* Modem has confirmed PSM sleep entry — clear the waiting flag. */
-            g_waiting_for_psm_sleep = false;
-
-            /* Wait for the modem to wake from PSM sleep, but only up to
-             * g_sdk_interval_sec. This keeps INTERVAL and TAU independent:
-             * if TAU > INTERVAL (e.g. AT&T grants 3.5h but interval is 60s),
-             * the cloud thread wakes after interval seconds, reconnects, and
-             * publishes on schedule — the modem stays awake across multiple
-             * publish cycles until the next TAU-triggered deep sleep. */
-            int wake_timeout = MAX(g_sdk_interval_sec + 30, 120);
-            if (power_mgr_wake(wake_timeout) != 0) {
-                LOG_DBG("PSM wake timeout (%ds) — modem still sleeping, "
-                        "interval elapsed. Reconnecting.", wake_timeout);
-            }
-            /* Drain any queued commands (AWS may have queued QoS-1 messages
-             * while the device was sleeping). */
-            LOG_DBG("PSM wake: draining incoming messages...");
-            for (int drain = 0; drain < 10; drain++) {
-                transport_poll(K_MSEC(200));
-            }
-        }
-
-        /* Waiting for modem to enter PSM sleep — do not reconnect yet.
-         * The T3324 active window (~30s) will expire and MODEM_SLEEP_ENTER
-         * will fire, setting power_mgr_is_psm_active() true. Until then
-         * just poll slowly to keep the watchdog fed without reconnecting. */
-        if (g_waiting_for_psm_sleep) {
-            transport_poll(K_MSEC(500));
-            continue;
-        }
+        /* PSM sleep is automatic — the modem enters sleep after the T3324
+         * active timer expires (~30s after our intentional disconnect).
+         * transport_connect() wakes the modem when the interval timer fires.
+         * No explicit wake wait needed — the modem radio comes up as part
+         * of the TLS/MQTT connect sequence. */
 #endif
 
         /* ── Reconnect if needed ──────────────────────────────────────── */
