@@ -2286,16 +2286,22 @@ static void cloud_thread_fn(void *a, void *b, void *c)
 
 #if defined(CONFIG_CONEXIO_CLOUD_PSM)
         if (power_mgr_is_psm_active()) {
-            /* Modem has confirmed PSM sleep entry — safe to clear the
-             * waiting flag and block here until the next TAU wake. */
+            /* Modem has confirmed PSM sleep entry — clear the waiting flag. */
             g_waiting_for_psm_sleep = false;
-            /* Wait up to 120s — some NB-IoT networks take 60-120s to re-register.
-             * 30s was too short and caused spurious "wake timeout" warnings. */
-            if (power_mgr_wake(120) != 0) {
-                LOG_WRN("PSM wake timeout (120s) — modem may be struggling to register");
+
+            /* Wait for the modem to wake from PSM sleep, but only up to
+             * g_sdk_interval_sec. This keeps INTERVAL and TAU independent:
+             * if TAU > INTERVAL (e.g. AT&T grants 3.5h but interval is 60s),
+             * the cloud thread wakes after interval seconds, reconnects, and
+             * publishes on schedule — the modem stays awake across multiple
+             * publish cycles until the next TAU-triggered deep sleep. */
+            int wake_timeout = MAX(g_sdk_interval_sec + 30, 120);
+            if (power_mgr_wake(wake_timeout) != 0) {
+                LOG_DBG("PSM wake timeout (%ds) — modem still sleeping, "
+                        "interval elapsed. Reconnecting.", wake_timeout);
             }
-            /* Modem just woke from PSM — drain any queued commands before
-             * publishing. AWS may have queued messages during the sleep. */
+            /* Drain any queued commands (AWS may have queued QoS-1 messages
+             * while the device was sleeping). */
             LOG_DBG("PSM wake: draining incoming messages...");
             for (int drain = 0; drain < 10; drain++) {
                 transport_poll(K_MSEC(200));
