@@ -1814,12 +1814,18 @@ static char *build_payload_for_category(char category)
                             CONFIG_CONEXIO_CLOUD_MODEM_INFO_REFRESH;
 
     /* ── Signal quality ───────────────────────────────────────────────
-     * _rssi: RSRP in dBm.  Reference: RSRP_IDX_TO_DBM macro.
+     * _rssi: RSRP index from modem. Convert to dBm on the cloud side:
      *   idx < 0 → idx-140,  idx > 0 → idx-141.  Range: ~-44 to -156 dBm.
+     *   255 = LTE_LC_CELL_RSRP_INVALID — modem hasn't measured yet
+     *         (common right after PSM wake). Skip rather than send garbage.
      * _snr:  SNR index.  SNR_IDX_TO_DB(x) = x-24 gives dB value.
      *   127 = SNR_UNAVAILABLE (modem could not measure). */
-    cJSON_AddNumberToObject(metrics, "_rssi",
-                            (double)cached_modem_param.network.rsrp.value);
+    {
+        int rsrp_val = (int)cached_modem_param.network.rsrp.value;
+        if (rsrp_val != 255) {  /* 255 = LTE_LC_CELL_RSRP_INVALID */
+            cJSON_AddNumberToObject(metrics, "_rssi", (double)rsrp_val);
+        }
+    }
     {
         int snr_val;
         if (modem_info_get_snr(&snr_val) == 0 && snr_val != SNR_UNAVAILABLE) {
