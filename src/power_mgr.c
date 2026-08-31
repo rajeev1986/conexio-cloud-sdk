@@ -26,7 +26,7 @@
 LOG_MODULE_REGISTER(power_mgr, LOG_LEVEL_INF);
 
 static bool g_psm_active = false;
-static bool g_psm_sleeping = false;   /* true only while modem is actually in PSM sleep */
+static volatile bool g_psm_sleeping = false;   /* true only while modem is actually in PSM sleep */
 static bool g_psm_decision_received = false; /* true once network grants or denies PSM */
 static K_SEM_DEFINE(modem_ready_sem, 0, 1);
 static K_SEM_DEFINE(psm_grant_sem, 0, 1);    /* given when network sends PSM_UPDATE */

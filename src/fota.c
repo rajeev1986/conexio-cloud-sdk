@@ -359,14 +359,19 @@ static int execute_job(const char *job_id, const char *job_document)
         char installed[FOTA_INSTALLED_VER_MAX] = {0};
         ssize_t rc = nvs_read(&g_fota_nvs, FOTA_INSTALLED_VER_NVS_ID,
                               installed, sizeof(installed));
-        if (rc > 0 && strncmp(installed, version, FOTA_INSTALLED_VER_MAX) == 0) {
-            LOG_INF("FOTA: version %s already installed — skipping download, "
-                    "publishing SUCCEEDED", version);
-            /* Publish SUCCEEDED directly — no download needed */
-            strncpy(g_current_job_id, job_id, sizeof(g_current_job_id) - 1);
-            job_status_publish("SUCCEEDED", NULL, NULL, -1);
-            cJSON_Delete(doc);
-            return 0;
+        if (rc > 0) {
+            /* nvs_read() does not null-terminate — force it to avoid
+             * strncmp comparing stale bytes from a prior (longer) write. */
+            installed[MIN(rc, (ssize_t)(sizeof(installed) - 1))] = '\0';
+            if (strcmp(installed, version) == 0) {
+                LOG_INF("FOTA: version %s already installed — skipping download, "
+                        "publishing SUCCEEDED", version);
+                /* Publish SUCCEEDED directly — no download needed */
+                strncpy(g_current_job_id, job_id, sizeof(g_current_job_id) - 1);
+                job_status_publish("SUCCEEDED", NULL, NULL, -1);
+                cJSON_Delete(doc);
+                return 0;
+            }
         }
     }
 

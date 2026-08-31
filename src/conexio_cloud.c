@@ -567,7 +567,10 @@ static uint32_t load_and_increment_reboot_count(void)
         flash_get_page_info_by_offs(reboot_nvs.flash_device,
                                     reboot_nvs.offset, &info);
         reboot_nvs.sector_size  = info.size;
-        reboot_nvs.sector_count = 2U; /* Two pages is the minimum for NVS */
+        /* Must match fota.c and offline_buffer.c — all three modules mount
+         * the same storage_partition. Mismatched sector_count causes NVS
+         * header corruption on the second mount, wiping all persisted state. */
+        reboot_nvs.sector_count = 4U;
 
         if (nvs_mount(&reboot_nvs) != 0) {
             LOG_WRN("NVS mount failed — reboot counter will not persist");
@@ -1285,6 +1288,15 @@ static void builtin_on_firmware_update(const char *payload_json, void *arg)
 {
     ARG_UNUSED(arg);
     if (!payload_json) return;
+
+    /* Guard against a second FIRMWARE_UPDATE command arriving while a download
+     * is already in progress. The static FOTA buffers (g_host_buf, g_file_buf)
+     * are not re-entrant and would be corrupted by a concurrent start. */
+    if (fota_is_active()) {
+        LOG_WRN("FOTA already in progress — ignoring duplicate FIRMWARE_UPDATE command");
+        return;
+    }
+
     cJSON *p = cJSON_Parse(payload_json);
     if (!p) return;
     const char *job_id = cJSON_GetStringValue(cJSON_GetObjectItem(p, "jobId"));
