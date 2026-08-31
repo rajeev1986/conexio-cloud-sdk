@@ -1102,6 +1102,13 @@ static void sdk_internal_event_handler(const struct conexio_cloud_event *evt)
          */
         if (transport_is_connected()) {
             LOG_DBG("Disconnecting MQTT before PSM sleep");
+            /* Mark this as an intentional disconnect — not a failure.
+             * Resetting the counter prevents retry_on_failure() (fired by
+             * the DISCONNECTED event) from accumulating toward max_attempts
+             * and triggering an unwanted reboot after N sleep cycles. */
+#if defined(CONFIG_CONEXIO_CLOUD_RETRY)
+            retry_on_success();
+#endif
             transport_disconnect();
         }
         power_mgr_sleep();
@@ -2234,11 +2241,12 @@ static void cloud_thread_fn(void *a, void *b, void *c)
 
 #if defined(CONFIG_CONEXIO_CLOUD_PSM)
         if (power_mgr_is_psm_active()) {
-            if (power_mgr_wake(30) != 0) {
-                LOG_WRN("PSM wake timeout — skipping publish cycle");
-                /* Don't blind-sleep — keep polling so commands are received */
-                transport_poll(K_MSEC(500));
-                continue;
+            /* Wait up to 120s — some NB-IoT networks take 60-120s to re-register.
+             * 30s was too short and caused spurious "wake timeout" warnings. */
+            if (power_mgr_wake(120) != 0) {
+                LOG_WRN("PSM wake timeout (120s) — modem may be struggling to register");
+                /* Still try to reconnect below; transport_connect() will handle
+                 * the case where LTE is not yet ready. */
             }
             /* Modem just woke from PSM — drain any queued commands before
              * publishing. AWS may have queued messages during the sleep. */

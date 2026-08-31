@@ -187,14 +187,14 @@ int conexio_lte_connect(int timeout_sec)
     /* Record the start time for connect_time_ms calculation */
     g_connect_start_ms = k_uptime_get();
 
-    /* Register the persistent event handler (safe to call multiple times —
-     * lte_lc_register_handler is idempotent for the same function pointer) */
+    /* Register the persistent event handler once.
+     * lte_lc_connect_async() accepts a handler param but we pass NULL
+     * here since we already registered via lte_lc_register_handler().
+     * Passing the same function to both would register it twice,
+     * causing every LTE event to fire the handler twice. */
     lte_lc_register_handler(lte_evt_handler);
 
-    /* Start the modem asynchronously.
-     * NCS v3.2.1: lte_lc_init_and_connect_async() was removed; use
-     * lte_lc_connect_async() which implicitly initialises on first call. */
-    int ret = lte_lc_connect_async(lte_evt_handler);
+    int ret = lte_lc_connect_async(NULL);
     if (ret) {
         LOG_ERR("lte_lc_connect_async failed (%d)", ret);
         return ret;
