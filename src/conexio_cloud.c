@@ -1144,13 +1144,38 @@ static void sdk_internal_event_handler(const struct conexio_cloud_event *evt)
          * after a successful publish, so this is a fresh cycle.
          */
         if (transport_is_connected()) {
-            LOG_DBG("Disconnecting MQTT before PSM sleep");
+            /* Only disconnect for PSM sleep if the network-granted TAU is
+             * close enough to the publish interval. If TAU >> INTERVAL
+             * (e.g. AT&T grants 3.5h but interval is 60s), entering PSM
+             * would mean the device sleeps for TAU seconds instead of
+             * waking at the interval. In that case, stay connected —
+             * the MQTT keepalive will keep the session alive and the
+             * interval timer fires normally.
+             *
+             * Rule: disconnect for PSM only when TAU <= (2 × interval).
+             * With TAU=3600 and INTERVAL=3600 → sleep (TAU == INTERVAL).
+             * With TAU=12000 and INTERVAL=60   → stay connected (TAU >> INTERVAL).
+             * With TAU=7200  and INTERVAL=3600 → sleep (TAU = 2 × INTERVAL). */
+            const struct conexio_lte_session_metrics *lm =
+                conexio_lte_get_session_metrics();
+            int granted_tau = (lm && lm->psm_tau_sec > 0)
+                              ? (int)lm->psm_tau_sec : 0;
+            bool tau_compatible = (granted_tau == 0) ||
+                                  (granted_tau <= 2 * g_sdk_interval_sec);
+
+            if (tau_compatible) {
+                LOG_DBG("Disconnecting MQTT before PSM sleep "
+                        "(TAU=%ds, interval=%ds)", granted_tau, g_sdk_interval_sec);
 #if defined(CONFIG_CONEXIO_CLOUD_RETRY)
-            g_intentional_disconnect = true;
-            retry_on_success();
+                g_intentional_disconnect = true;
+                retry_on_success();
 #endif
-            g_waiting_for_psm_sleep = true;
-            transport_disconnect();
+                g_waiting_for_psm_sleep = true;
+                transport_disconnect();
+            } else {
+                LOG_DBG("Staying connected — TAU=%ds >> interval=%ds, "
+                        "PSM sleep skipped", granted_tau, g_sdk_interval_sec);
+            }
         }
         power_mgr_sleep();
 #endif
