@@ -3048,6 +3048,12 @@ int conexio_cloud_publish(void)
     }
 
     if (overall == 0) {
+        /* Poll briefly to allow PUBACK to arrive before firing EVT_PUBLISHED.
+         * QoS 1 PUBACK from AWS IoT Core typically arrives in 50-200ms.
+         * Without this poll, EVT_PUBLISHED fires immediately after mqtt_publish()
+         * returns — before PUBACK — causing the pre-sleep disconnect to happen
+         * while the broker is still waiting to deliver the PUBACK. */
+        transport_poll(K_MSEC(500));
         struct conexio_cloud_event evt = { .type = CONEXIO_CLOUD_EVT_PUBLISHED };
         sdk_internal_event_handler(&evt);
     }

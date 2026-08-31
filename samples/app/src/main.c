@@ -503,10 +503,6 @@ int main(void)
         if (pub_ret) {
             LOG_WRN("Boot publish failed (%d) — will retry at next interval", pub_ret);
         }
-        /* Drain for 3s after boot publish to allow PUBACK to arrive before
-         * the cloud thread fires its pre-sleep disconnect. Without this drain
-         * the disconnect fires before PUBACK causing an unnecessary reconnect. */
-        k_sleep(K_SECONDS(3));
     } else {
         LOG_WRN("MQTT connect timeout — skipping boot publish");
     }
