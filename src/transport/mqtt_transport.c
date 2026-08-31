@@ -65,8 +65,11 @@ static const sec_tag_t sec_tags[] = {
 static struct mqtt_client     client;
 static struct sockaddr_storage broker_addr;
 
-static uint8_t rx_buf[1024];
-static uint8_t tx_buf[1024];
+static uint8_t rx_buf[4096];  /* Must fit largest inbound message — FIRMWARE_UPDATE
+                                * payload contains a pre-signed S3 URL (~1700 chars)
+                                * plus JSON envelope, totalling ~2KB + MQTT framing. */
+static uint8_t tx_buf[4096];  /* Must fit largest outbound publish — telemetry JSON
+                                * with all metrics + offline buffer replay payloads. */
 static uint8_t payload_buf[4096]; /* increased from 2048 — FOTA presigned URLs exceed 2KB */
 
 static bool connected = false;
