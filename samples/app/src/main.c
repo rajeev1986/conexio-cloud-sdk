@@ -497,10 +497,16 @@ int main(void)
     LOG_INF("Waiting for MQTT connection...");
     if (conexio_cloud_wait_connected(60000) == 0) {
         LOG_INF("Boot publish — sending telemetry immediately after reset");
+        /* Give the modem 2s to measure signal quality (RSRP) before publish */
+        k_sleep(K_SECONDS(2));
         int pub_ret = conexio_cloud_publish();
         if (pub_ret) {
             LOG_WRN("Boot publish failed (%d) — will retry at next interval", pub_ret);
         }
+        /* Drain for 3s after boot publish to allow PUBACK to arrive before
+         * the cloud thread fires its pre-sleep disconnect. Without this drain
+         * the disconnect fires before PUBACK causing an unnecessary reconnect. */
+        k_sleep(K_SECONDS(3));
     } else {
         LOG_WRN("MQTT connect timeout — skipping boot publish");
     }

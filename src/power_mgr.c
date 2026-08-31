@@ -117,28 +117,13 @@ int power_mgr_init(const struct power_mgr_config *cfg)
          *   TAU = 3600s  (1 hour network keepalive)
          *   Active = 10s (10s to connect, publish, disconnect)
          */
-        char tau_str[9];
-        char active_str[9];
-
-        /* Encode TAU in T3412 format — unit bits [7:5], value bits [4:0]
-         * Value must fit in 5 bits (0-31). Clamp before formatting. */
-        int tau_hours = cfg->psm_tau_sec / 3600;
-        if (tau_hours > 0 && tau_hours <= 31) {
-            snprintf(tau_str, sizeof(tau_str), "01100%02d",
-                     tau_hours); /* unit: 1 hour, value 0-31 */
-        } else {
-            int tau_min = (cfg->psm_tau_sec / 60);
-            tau_min = CLAMP(tau_min, 0, 31); /* T3412 5-bit value */
-            snprintf(tau_str, sizeof(tau_str), "00100%02d", tau_min);
-        }
-
-        /* Encode active time in T3324 format (unit: 2s, value 0-31) */
-        int active_units = CLAMP(cfg->psm_active_time_sec / 2, 0, 31);
-        snprintf(active_str, sizeof(active_str), "00000%02d", active_units);
-
-        int ret = lte_lc_psm_param_set(tau_str, active_str);
+        /* Use lte_lc_psm_param_set_seconds() — takes integer seconds directly
+         * and handles the 3GPP T3412/T3324 binary encoding internally.
+         * This is simpler and more reliable than manual binary string encoding. */
+        int ret = lte_lc_psm_param_set_seconds(cfg->psm_tau_sec,
+                                                cfg->psm_active_time_sec);
         if (ret) {
-            LOG_WRN("lte_lc_psm_param_set failed (%d) — "
+            LOG_WRN("lte_lc_psm_param_set_seconds failed (%d) — "
                     "falling back to NCS Kconfig timer values", ret);
         }
 
@@ -147,9 +132,8 @@ int power_mgr_init(const struct power_mgr_config *cfg)
             LOG_WRN("lte_lc_psm_req failed (%d)", ret);
         }
 
-        LOG_INF("PSM requested: TAU=%ds (%s), active=%ds (%s)",
-                cfg->psm_tau_sec, tau_str,
-                cfg->psm_active_time_sec, active_str);
+        LOG_INF("PSM requested: TAU=%ds, active=%ds",
+                cfg->psm_tau_sec, cfg->psm_active_time_sec);
 
     } else if (cfg->edrx_enable && !cfg->psm_enable) {
         /* NCS v3.2.1: lte_lc_edrx_req() takes bool (true=enable, false=disable) */
