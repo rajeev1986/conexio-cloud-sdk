@@ -190,6 +190,10 @@ static float    g_last_soc_pct      = -1.0f;  /* float — preserves sub-percent
 static int64_t  g_last_pub_time_ms  =  0;
 static double   g_last_battery_mv   = NAN; /* voltage from most recent fuel gauge read */
 
+/* Flag set before an intentional pre-PSM disconnect so the DISCONNECTED
+ * event handler knows to skip retry_on_failure(). Cleared after use. */
+static bool g_intentional_disconnect = false;
+
 /* ── Cached RSRP — updated asynchronously via %CESQ notification ─────────
  * The modem pushes a %CESQ notification whenever it measures a new signal
  * quality value. We cache the latest valid RSRP index here so build_payload()
@@ -1101,11 +1105,14 @@ static void sdk_internal_event_handler(const struct conexio_cloud_event *evt)
         break;
 
     case CONEXIO_CLOUD_EVT_DISCONNECTED:
-        LOG_WRN("Cloud disconnected");
+        LOG_DBG("Cloud disconnected (intentional=%d)", (int)g_intentional_disconnect);
 #if defined(CONFIG_CONEXIO_CLOUD_RETRY)
-        /* Increment failure counter and apply exponential backoff delay.
-         * If max_attempts is reached, retry_on_failure() reboots. */
-        retry_on_failure();
+        if (!g_intentional_disconnect) {
+            /* Unexpected disconnect — apply exponential backoff. */
+            retry_on_failure();
+        }
+        /* Always clear the flag after use. */
+        g_intentional_disconnect = false;
 #endif
         break;
 
@@ -1132,12 +1139,11 @@ static void sdk_internal_event_handler(const struct conexio_cloud_event *evt)
          */
         if (transport_is_connected()) {
             LOG_DBG("Disconnecting MQTT before PSM sleep");
-            /* Mark this as an intentional disconnect — not a failure.
-             * Resetting the counter prevents retry_on_failure() (fired by
-             * the DISCONNECTED event) from accumulating toward max_attempts
-             * and triggering an unwanted reboot after N sleep cycles. */
 #if defined(CONFIG_CONEXIO_CLOUD_RETRY)
-            retry_on_success();
+            /* Signal to the DISCONNECTED handler that this is intentional
+             * so retry_on_failure() is skipped — no backoff, no reconnect. */
+            g_intentional_disconnect = true;
+            retry_on_success();  /* reset counter so wake-reconnect starts clean */
 #endif
             transport_disconnect();
         }
