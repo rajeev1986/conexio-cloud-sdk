@@ -1139,9 +1139,13 @@ static void sdk_internal_event_handler(const struct conexio_cloud_event *evt)
          */
         if (transport_is_connected()) {
             /* Disconnect MQTT cleanly before PSM sleep.
-             * The modem will enter PSM sleep automatically after the T3324
-             * active timer expires (~30s). On the next interval, transport_connect()
-             * brings the radio back up naturally. */
+             * Skip if FOTA is active — the download needs the connection. */
+#if defined(CONFIG_CONEXIO_CLOUD_FOTA)
+            if (fota_is_active()) {
+                LOG_DBG("FOTA in progress — skipping pre-PSM disconnect");
+                break;
+            }
+#endif
             LOG_DBG("Disconnecting MQTT before PSM sleep");
 #if defined(CONFIG_CONEXIO_CLOUD_RETRY)
             g_intentional_disconnect = true;
@@ -2304,7 +2308,7 @@ static void cloud_thread_fn(void *a, void *b, void *c)
              * poll cycle.
              * Poll for up to 2 seconds total in 200ms windows. */
             LOG_DBG("Post-reconnect: draining incoming messages...");
-            for (int drain = 0; drain < 10; drain++) {
+            for (int drain = 0; drain < 25; drain++) {   /* 5s = 25 × 200ms */
                 transport_poll(K_MSEC(200));
             }
         }
