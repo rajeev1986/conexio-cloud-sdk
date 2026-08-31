@@ -580,6 +580,15 @@ static uint32_t load_and_increment_reboot_count(void)
 
 static uint32_t g_reboot_cnt = 0;
 
+/* SET_INTERVAL — updates the SDK-managed publish interval */
+static int g_sdk_interval_sec = CONFIG_CONEXIO_CLOUD_INTERVAL_SEC;
+
+/* Application-configurable interval limits.
+ * Set via conexio_cloud_register_interval() before init.
+ * Defaults: min=10s, max=INT_MAX (no upper cap). */
+static int g_interval_min_sec = 10;
+static int g_interval_max_sec = INT_MAX;
+
 /* reboot_counter_init — called once from conexio_cloud_init() */
 static void reboot_counter_init(void)
 {
@@ -1176,15 +1185,6 @@ static void builtin_on_reboot(const char *payload_json, void *arg)
     k_sleep(K_MSEC(500));
     sys_reboot(SYS_REBOOT_COLD);
 }
-
-/* SET_INTERVAL — updates the SDK-managed publish interval */
-static int g_sdk_interval_sec = CONFIG_CONEXIO_CLOUD_INTERVAL_SEC;
-
-/* Application-configurable interval limits.
- * Set via conexio_cloud_register_interval() before init.
- * Defaults: min=10s, max=INT_MAX (no upper cap). */
-static int g_interval_min_sec = 10;
-static int g_interval_max_sec = INT_MAX;
 
 static void builtin_on_set_interval(const char *payload_json, void *arg)
 {
