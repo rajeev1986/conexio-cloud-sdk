@@ -1102,8 +1102,10 @@ static void sdk_internal_event_handler(const struct conexio_cloud_event *evt)
 #endif /* CONFIG_CONEXIO_CLOUD_OFFLINE_BUFFER */
 
 #if defined(CONFIG_CONEXIO_CLOUD_FOTA)
-        /* Check for any pending AWS IoT Jobs immediately on connect */
-        fota_check_and_execute();
+        /* FOTA check is handled in the cloud thread after the post-reconnect
+         * drain loop, where SUBACK is guaranteed and the connection is fully
+         * ready. Do not call fota_check_and_execute() here (EVT_CONNECTED fires
+         * before SUBACK — publishing at that point may fail silently). */
 #endif
         break;
 
@@ -2314,6 +2316,14 @@ static void cloud_thread_fn(void *a, void *b, void *c)
             for (int drain = 0; drain < 25; drain++) {   /* 5s = 25 × 200ms */
                 transport_poll(K_MSEC(200));
             }
+
+#if defined(CONFIG_CONEXIO_CLOUD_FOTA)
+            /* Run FOTA check after drain — SUBACK is guaranteed at this point
+             * and the connection is fully established. This ensures the pending
+             * SUCCEEDED publish (from a prior FOTA reboot) goes out on a live,
+             * subscribed connection rather than immediately after raw CONNACK. */
+            fota_check_and_execute();
+#endif
         }
 
         /* ── Drive MQTT event loop (500 ms window) ──────────────────── */
