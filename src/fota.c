@@ -539,6 +539,25 @@ int fota_check_and_execute(void)
                           pending_job, sizeof(pending_job))) {
         LOG_INF("FOTA: publishing pending SUCCEEDED for job %s", pending_job);
 
+        /* Publish to our own diagnostics topic — AWS IoT Rules Engine cannot
+         * intercept $aws/ reserved topics, so we use v1/devices/{id}/diagnostics
+         * which is routed by the v1_device_diagnostics IoT Rule to the
+         * firmware job status Lambda for real-time dashboard updates. */
+        char diag_topic[96];
+        int diag_len = snprintf(diag_topic, sizeof(diag_topic),
+                                "v1/devices/%s/diagnostics", pending_dev);
+        if (diag_len > 0 && diag_len < (int)sizeof(diag_topic)) {
+            char diag_payload[160];
+            int dp_len = snprintf(diag_payload, sizeof(diag_payload),
+                                  "{\"type\":\"fota_succeeded\",\"jobId\":\"%s\","
+                                  "\"deviceId\":\"%s\",\"status\":\"SUCCEEDED\"}",
+                                  pending_job, pending_dev);
+            if (dp_len > 0 && dp_len < (int)sizeof(diag_payload)) {
+                transport_publish_raw(diag_topic, diag_payload, (size_t)dp_len);
+            }
+        }
+
+        /* Also publish to AWS IoT Jobs topic for completeness */
         char topic[128];
         int topic_len = snprintf(topic, sizeof(topic),
                                  "$aws/things/%s/jobs/%s/update",
