@@ -687,6 +687,12 @@ int main(void)
             fds.fd = client.transport.tls.sock;
         }
 
+        /* Block here until data arrives or keepalive deadline — this is the
+         * only place the loop should yield.  Without this poll the loop spins
+         * back to mqtt_connect before the previous TLS handshake completes,
+         * allocating multiple sockets → ENOMEM (-12). */
+        ret = zsock_poll(&fds, 1, mqtt_keepalive_time_left(&client));
+
         if (ret < 0) {
             LOG_ERR("zsock_poll error: %d", ret);
             mqtt_disconnect(&client, NULL);
