@@ -32,6 +32,13 @@
 #include "cert_store.h"
 #include "provision.h"
 
+/* Provisioning firmware version from VERSION file — generated at build time */
+#if __has_include(<app_version.h>)
+#  include <app_version.h>
+#else
+#  define APP_VERSION_STRING "unknown"
+#endif
+
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
 /* ── Device ID ───────────────────────────────────────────────────────────── */
@@ -489,7 +496,8 @@ int main(void)
 {
     int ret;
 
-    LOG_INF("=== Conexio Stratus Fleet Provisioning ===");
+    LOG_INF("=== Conexio Stratus Fleet Provisioning v%s ===",
+            APP_VERSION_STRING);
     LOG_INF("Endpoint: %s:8883", CONFIG_STRATUS_AWS_ENDPOINT);
 
     /* 1. Load persisted provisioning flag */
