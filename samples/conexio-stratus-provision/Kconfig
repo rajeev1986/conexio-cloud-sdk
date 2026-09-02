@@ -1,10 +1,12 @@
 mainmenu "Conexio Stratus AWS Fleet Provisioning"
 
 config STRATUS_AWS_ENDPOINT
-	string "AWS IoT Core MQTT endpoint"
-	default "ENDPOINT.iot.us-east-1.amazonaws.com"
+	string "Conexio Cloud MQTT broker hostname"
+	default "mqtt.cloud.conexiotech.com"
 	help
-	  Get with: aws iot describe-endpoint --endpoint-type iot:Data-ATS
+	  Conexio Cloud MQTT endpoint (port 8883, TLS mutual auth).
+	  Used for both fleet provisioning and normal telemetry operation.
+	  Do not change unless self-hosting on a different AWS account.
 
 config STRATUS_FLEET_TEMPLATE
 	string "AWS IoT Fleet Provisioning template name"
