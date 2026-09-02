@@ -16,6 +16,7 @@
 #include <zephyr/fs/nvs.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/reboot.h>
+#include <zephyr/random/random.h>
 
 #include <modem/nrf_modem_lib.h>
 #include <modem/lte_lc.h>
@@ -60,9 +61,20 @@ static struct sockaddr_storage broker_addr __aligned(4);
 static bool mqtt_connected;
 
 /* ── Telemetry ───────────────────────────────────────────────────────────── */
-static char topic_telemetry[64];
-static char topic_command[64];
+static char topic_telemetry[72];   /* "v1/devices/{15-digit-imei}/telemetry\0" */
+static char topic_command[72];     /* "v1/devices/{15-digit-imei}/commands\0"  */
 static int  telemetry_interval_sec = CONFIG_STRATUS_TELEMETRY_INTERVAL_SEC;
+
+/* ── NTP sync semaphore ──────────────────────────────────────────────────── */
+static K_SEM_DEFINE(ntp_ready, 0, 1);
+
+static void date_time_evt_handler(const struct date_time_evt *evt)
+{
+    if (evt->type == DATE_TIME_EVT_TYPE_UPDATED) {
+        LOG_INF("NTP time synced");
+        k_sem_give(&ntp_ready);
+    }
+}
 
 /* ── LTE ─────────────────────────────────────────────────────────────────── */
 static K_SEM_DEFINE(lte_ready, 0, 1);
@@ -118,17 +130,9 @@ static void persist_provisioned(void)
 
 static void reboot_counter_init(void)
 {
-    /* settings_subsys_init() was already called before this function.
-     * Read current count, increment, and save back — all via Settings NVS.
-     * This avoids mounting a second nvs_fs on storage_partition which would
-     * conflict with the Settings NVS backend and lose the provisioning flag. */
     int ret = settings_load_subtree("prov/reboot_cnt");
-
-    /* Load may return -ENOENT on first boot — that's fine, counter starts at 0 */
     (void)ret;
-
     g_reboot_cnt++;
-
     ret = settings_save_one(REBOOT_CNT_KEY, &g_reboot_cnt, sizeof(g_reboot_cnt));
     if (ret) {
         LOG_WRN("Reboot counter save failed: %d", ret);
@@ -140,8 +144,6 @@ static void reboot_counter_init(void)
 
 static int derive_device_id(void)
 {
-    /* modem_info_string_get(MODEM_INFO_IMEI) issues AT+CGSN directly.
-     * Works before LTE registration — no network needed. */
     char imei[MODEM_INFO_MAX_RESPONSE_SIZE] = {0};
     int ret = modem_info_string_get(MODEM_INFO_IMEI, imei, sizeof(imei));
     if (ret < 0) {
@@ -149,7 +151,6 @@ static int derive_device_id(void)
         return ret;
     }
 
-    /* Strip trailing CR/LF/space */
     for (int i = (int)strlen(imei) - 1; i >= 0; i--) {
         if (imei[i] == '\r' || imei[i] == '\n' || imei[i] == ' ') {
             imei[i] = '\0';
@@ -172,8 +173,6 @@ static int derive_device_id(void)
 
 static int resolve_broker(void)
 {
-    /* Use zsock_ prefixed APIs directly — NET_SOCKETS_POSIX_NAMES was
-     * removed in NCS v2.x so the unprefixed aliases are not available. */
     struct zsock_addrinfo hints = {
         .ai_family   = AF_INET,
         .ai_socktype = SOCK_STREAM,
@@ -206,12 +205,10 @@ static void mqtt_client_setup(bool use_claim)
 {
     mqtt_client_init(&client);
 
-    /* mqtt_client_init zeros the struct, leaving tls.sock = 0.
-     * fd 0 is a real descriptor (UART) on Zephyr — must set to -1
-     * so the MQTT library knows no socket is open yet. */
     client.transport.tls.sock = -1;
 
-    client.broker             = &broker_addr;    client.evt_cb             = use_claim ? provision_mqtt_evt_handler
+    client.broker             = &broker_addr;
+    client.evt_cb             = use_claim ? provision_mqtt_evt_handler
                                           : normal_mqtt_evt_handler;
     client.client_id.utf8     = (uint8_t *)g_device_id;
     client.client_id.size     = strlen(g_device_id);
@@ -245,7 +242,8 @@ static void mqtt_client_setup(bool use_claim)
                 CONFIG_STRATUS_CLAIM_CA_TAG,
                 CONFIG_STRATUS_CLAIM_CERT_TAG,
                 CONFIG_STRATUS_CLAIM_KEY_TAG);
-    } else {        static sec_tag_t device_tags[] = {
+    } else {
+        static sec_tag_t device_tags[] = {
             CONFIG_STRATUS_DEVICE_CA_TAG,
             CONFIG_STRATUS_DEVICE_CERT_TAG,
             CONFIG_STRATUS_DEVICE_KEY_TAG,
@@ -261,7 +259,6 @@ static void mqtt_client_setup(bool use_claim)
 
 /* ── Telemetry helpers ───────────────────────────────────────────────────── */
 
-/* ISO-8601 timestamp — direct digit write, no snprintf, no -Wformat-truncation */
 #define TS_LEN 25  /* "YYYY-MM-DDTHH:MM:SS.mmmZ\0" */
 
 static void make_timestamp(char buf[TS_LEN])
@@ -270,9 +267,8 @@ static void make_timestamp(char buf[TS_LEN])
     int ret = date_time_now(&unix_ms);
 
     if (ret || unix_ms <= 0) {
-        /* Fallback: uptime as HH:MM:SS — direct digit write, no snprintf */
         uint32_t s  = (uint32_t)(k_uptime_get() / 1000U);
-        uint32_t hh = (s / 3600U) % 100U; /* cap at 99 to guarantee 2 digits */
+        uint32_t hh = (s / 3600U) % 100U;
         uint32_t mm = (s % 3600U) / 60U;
         uint32_t ss = s % 60U;
         char *p = buf;
@@ -336,19 +332,16 @@ static int publish_telemetry(void)
 
     int16_t rssi = read_rssi();
 
-    /* Build payload manually with snprintf to avoid cJSON float-printing
-     * issues with Zephyr's minimal libc (%g not fully supported → *float*).
-     * Values are formatted as fixed-point decimals directly. */
+    /* Use sys_rand32_get() for properly seeded random values.
+     * k_uptime_get_32() is monotonically increasing and produces correlated
+     * values across reboots — sys_rand32_get() uses the hardware TRNG. */
+    uint32_t rnd = sys_rand32_get();
+    int temp_int = 20 + (int)(rnd         % 16); /* 20–35 °C integer part */
+    int temp_dec = (int)((rnd >> 4)       % 10); /* 0–9 decimal */
+    int humidity = 40 + (int)((rnd >> 8)  % 36); /* 40–75 % RH */
+
     static char payload[512];
     int len;
-
-    /* Simulated sensor readings — random within realistic ranges.
-     * Temperature: 20.0–35.0 °C (1 decimal place)
-     * Humidity:    40–75 % RH  (integer) */
-    uint32_t seed = (uint32_t)k_uptime_get_32();
-    int temp_int  = 20 + (int)(seed         % 16); /* 20–35 integer part */
-    int temp_dec  = (int)((seed >> 4)       % 10); /* 0–9 decimal part */
-    int humidity  = 40 + (int)((seed >> 8)  % 36); /* 40–75 */
 
     if (rssi != INT16_MIN) {
         len = snprintf(payload, sizeof(payload),
@@ -384,7 +377,7 @@ static int publish_telemetry(void)
         .message.topic.topic.size = strlen(topic_telemetry),
         .message.payload.data     = (uint8_t *)payload,
         .message.payload.len      = (uint32_t)len,
-        .message_id               = (uint16_t)(k_uptime_get_32() & 0xFFFF),
+        .message_id               = (uint16_t)(sys_rand32_get() & 0xFFFF),
     };
 
     int ret = mqtt_publish(&client, &msg);
@@ -443,7 +436,6 @@ static void normal_mqtt_evt_handler(struct mqtt_client *c,
             cmd_payload_buf[plen] = '\0';
             LOG_INF("Command received: %s", cmd_payload_buf);
 
-            /* Parse and dispatch commands */
             cJSON *msg = cJSON_Parse((char *)cmd_payload_buf);
             if (msg) {
                 const char *cmd = cJSON_GetStringValue(
@@ -509,8 +501,7 @@ int main(void)
                 ret, (int)g_provisioned, (unsigned)g_reboot_cnt);
     }
 
-    /* 2. Init modem library — must be done before any modem_key_mgmt call.
-     *    The modem starts in offline (AT-command) mode here. */
+    /* 2. Init modem library */
     ret = nrf_modem_lib_init();
     if (ret) {
         LOG_ERR("nrf_modem_lib_init failed: %d", ret);
@@ -530,7 +521,7 @@ int main(void)
         return -1;
     }
 
-    /* 4. Read IMEI — AT+CGSN works in offline mode */
+    /* 4. Read IMEI */
     modem_info_init();
     ret = derive_device_id();
     if (ret) {
@@ -541,13 +532,7 @@ int main(void)
     /* 5. Reboot counter */
     reboot_counter_init();
 
-    /* 5a. Generate device key pair + CSR while modem is still offline.
-     *     AT%KEYGEN requires LTE to be inactive.
-     *     IMPORTANT: only run on unprovisioned devices. On already-provisioned
-     *     devices the private key at tag 21 must NOT be overwritten — it would
-     *     invalidate the certificate that AWS issued for the previous key pair.
-     *     Use g_provisioned (settings flag) + cert_store_device_creds_exist()
-     *     to detect the provisioned state before LTE connects. */
+    /* 5a. Generate device key pair + CSR while modem is still offline */
     bool creds_exist = cert_store_device_creds_exist();
     LOG_INF("Boot check: g_provisioned=%d cert_exists=%d",
             (int)g_provisioned, (int)creds_exist);
@@ -577,9 +562,14 @@ int main(void)
         return -1;
     }
 
-    /* 7. Sync NTP */
-    date_time_update_async(NULL);
-    k_sleep(K_SECONDS(3));
+    /* 7. Sync NTP — wait for confirmed update, up to 10 s.
+     *    Using a semaphore with date_time_evt_handler() instead of a blind
+     *    k_sleep(3s) ensures we only proceed once time is actually valid.
+     *    Fall through on timeout — make_timestamp() will use uptime fallback. */
+    date_time_update_async(date_time_evt_handler);
+    if (k_sem_take(&ntp_ready, K_SECONDS(10)) != 0) {
+        LOG_WRN("NTP sync timed out — timestamps may be inaccurate");
+    }
 
     /* 8. Resolve broker DNS */
     ret = resolve_broker();
@@ -593,10 +583,6 @@ int main(void)
     if (!already_provisioned) {
         LOG_INF("Device not provisioned — starting Fleet Provisioning");
 
-        /* CSR was already generated during the offline window at boot
-         * (provision_prepare_csr was called before LTE connected).
-         * Clear only the stale public cert — private key was regenerated.
-         * Settings flag is cleared for consistency. */
         cert_store_clear_device_creds();
         settings_delete(PROV_SETTINGS_KEY);
         g_provisioned = false;
@@ -612,23 +598,13 @@ int main(void)
         }
 
         persist_provisioned();
-        /* Force-flush all pending NVS writes before the reboot. */
         settings_save();
         LOG_INF("Provisioning complete -- shutting down modem and rebooting");
 
-        /* CRITICAL: use nrf_modem_lib_shutdown() to properly deinitialize
-         * the modem before rebooting. This ensures the modem has flushed its
-         * NVM (including the newly written device certificate at tag 21)
-         * before the application core resets.
-         *
-         * lte_lc_power_off() alone (AT+CFUN=0) is not sufficient — the app
-         * core may reboot before the modem completes its NVM write cycle.
-         * nrf_modem_lib_shutdown() sends AT+CFUN=0, waits for the modem to
-         * acknowledge shutdown, then closes the IPC channel cleanly. */
         lte_lc_power_off();
-        k_sleep(K_MSEC(1000));  /* give modem time to flush NVM after CFUN=0 */
+        k_sleep(K_MSEC(1000));
         nrf_modem_lib_shutdown();
-        k_sleep(K_MSEC(500));   /* wait for IPC shutdown to complete */
+        k_sleep(K_MSEC(500));
         sys_reboot(SYS_REBOOT_COLD);
         return 0;
     }
@@ -636,42 +612,76 @@ int main(void)
     /* ── NORMAL OPERATION ────────────────────────────────────────────────── */
     LOG_INF("Device provisioned — starting normal operation");
 
+    /* Topics use v1/ prefix to match the production cloud ingestion rules. */
     snprintf(topic_telemetry, sizeof(topic_telemetry),
-             "devices/%s/telemetry", g_device_id);
+             "v1/devices/%s/telemetry", g_device_id);
     snprintf(topic_command, sizeof(topic_command),
-             "devices/%s/commands", g_device_id);
+             "v1/devices/%s/commands", g_device_id);
     LOG_INF("Telemetry topic: %s", topic_telemetry);
     LOG_INF("Command topic:   %s", topic_command);
 
+    /* Enable PSM to reduce power consumption between publishes.
+     * T3412 (TAU timer) = 6 min, T3324 (active timer) = 10 s.
+     * The modem will enter low-power sleep between telemetry publishes
+     * instead of keeping the radio active continuously. */
+    ret = lte_lc_psm_req(true);
+    if (ret) {
+        LOG_WRN("PSM request failed: %d — continuing without PSM", ret);
+    } else {
+        LOG_INF("PSM enabled (T3412=6min, T3324=10s)");
+    }
+
     mqtt_client_setup(false /* device creds */);
 
-    /* ── Main loop ───────────────────────────────────────────────────────── */
-    /* Use zsock_pollfd — NET_SOCKETS_POSIX_NAMES removed in NCS v2.x.
-     * zsock_poll() timeout is in milliseconds; mqtt_keepalive_time_left()
-     * returns ms until next PINGREQ — using it drives keepalives precisely
-     * without busy-waiting. */
+    /* ── Main loop with exponential backoff ──────────────────────────────── */
+    /* Reconnect backoff: starts at RETRY_BASE_S, doubles each attempt,
+     * caps at RETRY_MAX_S. After RETRY_MAX_ATTEMPTS consecutive failures
+     * the device reboots to escape a permanent modem hang state. */
+#define RETRY_BASE_S       5
+#define RETRY_MAX_S        300
+#define RETRY_MAX_ATTEMPTS 10
+
     struct zsock_pollfd fds = {
         .events = ZSOCK_POLLIN,
     };
 
-    int64_t last_pub_ms = 0;
+    int64_t last_pub_ms   = 0;
+    int     retry_delay_s = RETRY_BASE_S;
+    int     retry_count   = 0;
 
     while (1) {
         if (!mqtt_connected) {
-            LOG_INF("Connecting to AWS IoT...");
+            LOG_INF("Connecting to AWS IoT (attempt %d/%d)...",
+                    retry_count + 1, RETRY_MAX_ATTEMPTS);
+
             ret = mqtt_connect(&client);
             if (ret) {
-                LOG_ERR("mqtt_connect failed: %d — retrying in 10s", ret);
-                k_sleep(K_SECONDS(10));
+                retry_count++;
+                LOG_ERR("mqtt_connect failed: %d — retry in %ds (attempt %d/%d)",
+                        ret, retry_delay_s, retry_count, RETRY_MAX_ATTEMPTS);
+
+                if (retry_count >= RETRY_MAX_ATTEMPTS) {
+                    LOG_ERR("Max MQTT reconnect attempts reached — rebooting");
+                    sys_reboot(SYS_REBOOT_COLD);
+                }
+
+                k_sleep(K_SECONDS(retry_delay_s));
+
+                /* Exponential backoff: double delay, cap at RETRY_MAX_S */
+                retry_delay_s = MIN(retry_delay_s * 2, RETRY_MAX_S);
                 continue;
             }
+
+            /* Connected — reset backoff */
+            retry_count   = 0;
+            retry_delay_s = RETRY_BASE_S;
             fds.fd = client.transport.tls.sock;
         }
 
         ret = zsock_poll(&fds, 1, mqtt_keepalive_time_left(&client));
         if (ret < 0) {
             LOG_ERR("zsock_poll error: %d", ret);
-            mqtt_disconnect(&client, NULL);
+            mqtt_disconnect(&client);
             mqtt_connected = false;
             continue;
         }
@@ -680,7 +690,7 @@ int main(void)
         ret = mqtt_live(&client);
         if (ret && ret != -EAGAIN) {
             LOG_WRN("mqtt_live error: %d", ret);
-            mqtt_disconnect(&client, NULL);
+            mqtt_disconnect(&client);
             mqtt_connected = false;
             continue;
         }
@@ -689,7 +699,7 @@ int main(void)
             ret = mqtt_input(&client);
             if (ret) {
                 LOG_WRN("mqtt_input error: %d", ret);
-                mqtt_disconnect(&client, NULL);
+                mqtt_disconnect(&client);
                 mqtt_connected = false;
                 continue;
             }
@@ -697,7 +707,7 @@ int main(void)
 
         if (fds.revents & (ZSOCK_POLLERR | ZSOCK_POLLNVAL | ZSOCK_POLLHUP)) {
             LOG_WRN("poll condition: revents=0x%x", fds.revents);
-            mqtt_disconnect(&client, NULL);
+            mqtt_disconnect(&client);
             mqtt_connected = false;
             continue;
         }
