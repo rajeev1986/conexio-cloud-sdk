@@ -13,7 +13,6 @@
 #include <zephyr/settings/settings.h>
 #include <zephyr/drivers/flash.h>
 #include <zephyr/storage/flash_map.h>
-#include <zephyr/fs/nvs.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/reboot.h>
 #include <zephyr/random/random.h>
@@ -45,7 +44,6 @@ static bool g_provisioned;
 
 /* ── Reboot counter (NVS) ────────────────────────────────────────────────── */
 #define NVS_REBOOT_ID 1U  /* unused — reboot counter now stored via Settings */
-static struct nvs_fs reboot_nvs;  /* unused — kept to avoid removing includes */
 static uint32_t g_reboot_cnt;
 
 /* ── MQTT ────────────────────────────────────────────────────────────────── */
@@ -70,8 +68,11 @@ static K_SEM_DEFINE(ntp_ready, 0, 1);
 
 static void date_time_evt_handler(const struct date_time_evt *evt)
 {
-    if (evt->type == DATE_TIME_EVT_TYPE_UPDATED) {
-        LOG_INF("NTP time synced");
+    /* Signal NTP ready on any successful time acquisition */
+    if (evt->type == DATE_TIME_OBTAINED_NTP  ||
+        evt->type == DATE_TIME_OBTAINED_MODEM ||
+        evt->type == DATE_TIME_OBTAINED_EXT) {
+        LOG_INF("NTP time synced (source: %d)", evt->type);
         k_sem_give(&ntp_ready);
     }
 }
@@ -678,10 +679,9 @@ int main(void)
             fds.fd = client.transport.tls.sock;
         }
 
-        ret = zsock_poll(&fds, 1, mqtt_keepalive_time_left(&client));
         if (ret < 0) {
             LOG_ERR("zsock_poll error: %d", ret);
-            mqtt_disconnect(&client);
+            mqtt_disconnect(&client, NULL);
             mqtt_connected = false;
             continue;
         }
@@ -690,7 +690,7 @@ int main(void)
         ret = mqtt_live(&client);
         if (ret && ret != -EAGAIN) {
             LOG_WRN("mqtt_live error: %d", ret);
-            mqtt_disconnect(&client);
+            mqtt_disconnect(&client, NULL);
             mqtt_connected = false;
             continue;
         }
@@ -699,7 +699,7 @@ int main(void)
             ret = mqtt_input(&client);
             if (ret) {
                 LOG_WRN("mqtt_input error: %d", ret);
-                mqtt_disconnect(&client);
+                mqtt_disconnect(&client, NULL);
                 mqtt_connected = false;
                 continue;
             }
@@ -707,7 +707,7 @@ int main(void)
 
         if (fds.revents & (ZSOCK_POLLERR | ZSOCK_POLLNVAL | ZSOCK_POLLHUP)) {
             LOG_WRN("poll condition: revents=0x%x", fds.revents);
-            mqtt_disconnect(&client);
+            mqtt_disconnect(&client, NULL);
             mqtt_connected = false;
             continue;
         }
