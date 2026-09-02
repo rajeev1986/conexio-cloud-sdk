@@ -353,8 +353,8 @@ static int publish_telemetry(void)
 
     if (rssi != INT16_MIN) {
         len = snprintf(payload, sizeof(payload),
-            "{\"deviceId\":\"%s\","
-            "\"timestamp\":\"%s\","
+            "{\"dev_id\":\"%s\","
+            "\"ts\":\"%s\","
             "\"metrics\":{"
             "\"temperature\":%d.%d,"
             "\"humidity\":%d,"
@@ -364,8 +364,8 @@ static int publish_telemetry(void)
             (int)rssi, (unsigned)g_reboot_cnt);
     } else {
         len = snprintf(payload, sizeof(payload),
-            "{\"deviceId\":\"%s\","
-            "\"timestamp\":\"%s\","
+            "{\"dev_id\":\"%s\","
+            "\"ts\":\"%s\","
             "\"metrics\":{"
             "\"temperature\":%d.%d,"
             "\"humidity\":%d,"
