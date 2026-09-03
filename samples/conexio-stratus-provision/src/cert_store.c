@@ -117,6 +117,18 @@ void cert_store_clear_device_creds(void)
     }
 }
 
+void cert_store_clear_all_device_creds(void)
+{
+    LOG_WRN("Clearing ALL device credentials (cert + key) for force-reprovision");
+    delete_if_exists(CONFIG_STRATUS_DEVICE_CERT_TAG,
+                     MODEM_KEY_MGMT_CRED_TYPE_PUBLIC_CERT,  "device cert");
+    delete_if_exists(CONFIG_STRATUS_DEVICE_KEY_TAG,
+                     MODEM_KEY_MGMT_CRED_TYPE_PRIVATE_CERT, "device key");
+    /* Clear legacy slots from pre-migration firmware */
+    delete_if_exists(21, MODEM_KEY_MGMT_CRED_TYPE_PUBLIC_CERT,  "device cert (old tag 21)");
+    delete_if_exists(22, MODEM_KEY_MGMT_CRED_TYPE_PRIVATE_CERT, "device key (old tag 22)");
+}
+
 int cert_store_write_device_creds(const char *cert, const char *key)
 {
     if (!cert || !key) {

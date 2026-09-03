@@ -15,8 +15,11 @@
 /** Provision claim Root CA + cert + key into modem. Skips if already present. */
 int cert_store_provision_claim_creds(void);
 
-/** Delete device cert (tag 101) and key (tag 102) if present. Always safe to call. */
+/** Delete device cert (tag 101) only — key at 102 preserved. Normal re-provision path. */
 void cert_store_clear_device_creds(void);
+
+/** Delete BOTH device cert (101) AND key (102). Force-reprovision recovery only. */
+void cert_store_clear_all_device_creds(void);
 
 /**
  * Write unique device cert + key issued by AWS.

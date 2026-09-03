@@ -552,10 +552,7 @@ int main(void)
      * then remove the option and flash again. Never use in production. */
     if (g_provisioned || creds_exist) {
         LOG_WRN("FORCE_REPROVISION: clearing all device credentials and NVS flag");
-        cert_store_clear_device_creds();
-        /* Also delete the key — we need a fresh AT%KEYGEN */
-        modem_key_mgmt_delete(CONFIG_STRATUS_DEVICE_KEY_TAG,
-                              MODEM_KEY_MGMT_CRED_TYPE_PRIVATE_CERT);
+        cert_store_clear_all_device_creds();
         settings_delete(PROV_SETTINGS_KEY);
         g_provisioned = false;
         creds_exist   = false;
