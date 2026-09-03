@@ -123,8 +123,7 @@ static int settings_h_set(const char *key, size_t len,
         if (rc > 0) {
             g_force_ran = val;
         }
-    }
-    return 0;
+    }    return 0;
 }
 
 SETTINGS_STATIC_HANDLER_DEFINE(prov_handler, "prov", NULL,
@@ -554,6 +553,13 @@ int main(void)
     LOG_INF("Boot check: g_provisioned=%d cert_exists=%d",
             (int)g_provisioned, (int)creds_exist);
 
+    /* One-time cleanup: delete any stale private key at DEVICE_CERT_TAG (101).
+     * Old firmware builds ran AT%KEYGEN=101 (wrong tag), leaving a key at 101
+     * alongside the cert. The modem's sec_tag search finds this key first and
+     * uses it for TLS auth, but it doesn't match the cert — causing -104.
+     * Safe to call unconditionally: delete_if_exists() is a no-op if absent. */
+    cert_store_clean_stale_key_at_cert_tag();
+
 #if defined(CONFIG_STRATUS_FORCE_REPROVISION)
     /* Developer escape hatch — force a clean re-provisioning cycle.
      * Self-clearing via NVS 'prov/forced' flag — only fires ONCE even if
@@ -568,8 +574,7 @@ int main(void)
             /* Persist the flag so next boot skips this block */
             bool done = true;
             settings_save_one("prov/forced", &done, sizeof(done));
-            g_force_ran = true;
-        } else if (g_force_ran) {
+            g_force_ran = true;        } else if (g_force_ran) {
             LOG_INF("FORCE_REPROVISION already ran — skipping");
         }
     }

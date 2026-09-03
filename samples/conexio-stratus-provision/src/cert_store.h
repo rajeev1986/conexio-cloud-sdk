@@ -21,6 +21,11 @@ void cert_store_clear_device_creds(void);
 /** Delete BOTH device cert (101) AND key (102). Force-reprovision recovery only. */
 void cert_store_clear_all_device_creds(void);
 
+/** Delete stale private key at DEVICE_CERT_TAG (101) if present.
+ *  Left by old firmware that ran AT%KEYGEN=101 instead of 102.
+ *  Safe to call on every boot — no-op if already clean. */
+void cert_store_clean_stale_key_at_cert_tag(void);
+
 /**
  * Write unique device cert + key issued by AWS.
  * Always deletes existing entries first to avoid -EACCES on re-provisioning.

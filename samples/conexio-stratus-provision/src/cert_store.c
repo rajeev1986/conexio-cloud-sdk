@@ -111,10 +111,29 @@ void cert_store_clear_device_creds(void)
      * AT%KEYGEN already deletes and regenerates the key internally. */
     delete_if_exists(CONFIG_STRATUS_DEVICE_CERT_TAG,
                      MODEM_KEY_MGMT_CRED_TYPE_PUBLIC_CERT, "device cert");
+    /* Also delete any stale PRIVATE KEY at DEVICE_CERT_TAG — this was left
+     * by old builds that ran AT%KEYGEN=101 (cert tag) instead of 102 (key tag).
+     * The modem searches sec_tag_list [100,101,102] for a private key and
+     * picks the first match — if tag 101 has an old mismatched key it will
+     * be used instead of the correct one at 102, causing TLS auth failure. */
+    delete_if_exists(CONFIG_STRATUS_DEVICE_CERT_TAG,
+                     MODEM_KEY_MGMT_CRED_TYPE_PRIVATE_CERT, "stale key at cert tag (101)");
     /* Clear old tag 21 slot from pre-migration firmware if still present */
     if (CONFIG_STRATUS_DEVICE_CERT_TAG != 21) {
         delete_if_exists(21, MODEM_KEY_MGMT_CRED_TYPE_PUBLIC_CERT, "device cert (old tag 21)");
     }
+}
+
+void cert_store_clean_stale_key_at_cert_tag(void)
+{
+    /* Delete private key at DEVICE_CERT_TAG (101) if present.
+     * This key was left by old firmware that ran AT%KEYGEN=101 instead of 102.
+     * The modem searches sec_tag_list [100,101,102] for a private key and
+     * picks the first match — if 101 has an old mismatched key it is used
+     * for TLS auth, failing with -104 (ECONNRESET) from AWS. */
+    delete_if_exists(CONFIG_STRATUS_DEVICE_CERT_TAG,
+                     MODEM_KEY_MGMT_CRED_TYPE_PRIVATE_CERT,
+                     "stale key at cert tag (101)");
 }
 
 void cert_store_clear_all_device_creds(void)
@@ -127,8 +146,13 @@ void cert_store_clear_all_device_creds(void)
     /* Clear legacy slots from pre-migration firmware */
     delete_if_exists(21, MODEM_KEY_MGMT_CRED_TYPE_PUBLIC_CERT,  "device cert (old tag 21)");
     delete_if_exists(22, MODEM_KEY_MGMT_CRED_TYPE_PRIVATE_CERT, "device key (old tag 22)");
+    /* Clear stale key at DEVICE_CERT_TAG (101) left by old AT%KEYGEN=101 runs */
+    if (CONFIG_STRATUS_DEVICE_CERT_TAG != CONFIG_STRATUS_DEVICE_KEY_TAG) {
+        delete_if_exists(CONFIG_STRATUS_DEVICE_CERT_TAG,
+                         MODEM_KEY_MGMT_CRED_TYPE_PRIVATE_CERT,
+                         "stale key at cert tag");
+    }
 }
-
 int cert_store_write_device_creds(const char *cert, const char *key)
 {
     if (!cert || !key) {
