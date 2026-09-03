@@ -23,7 +23,7 @@
  *
  * Flow
  * ────
- *  1. AT%KEYGEN=21,2,0  → modem generates RSA-2048 key pair, returns CSR PEM
+ *  1. AT%KEYGEN=102,2,0  → modem generates RSA-2048 key pair at tag 102, returns CSR PEM
  *  2. MQTT connect (claim creds)
  *  3. Subscribe to create-from-csr topics
  *  4. Publish CSR to $aws/certificates/create-from-csr/json
@@ -568,7 +568,10 @@ void provision_mqtt_evt_handler(struct mqtt_client *client,
 
 int provision_prepare_csr(void)
 {
-    return generate_csr(CONFIG_STRATUS_DEVICE_CERT_TAG,
+    /* AT%KEYGEN stores the private key at the given sec_tag.
+     * Use DEVICE_KEY_TAG (102) so the key lands at the correct slot
+     * and cert_store_device_creds_exist() finds it there after provisioning. */
+    return generate_csr(CONFIG_STRATUS_DEVICE_KEY_TAG,
                         s_csr, sizeof(s_csr));
 }
 
