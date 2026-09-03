@@ -24,7 +24,10 @@ config STRATUS_MQTT_KEEPALIVE
 
 # ── Modem TLS security tags ───────────────────────────────────────────────────
 # Claim creds (10-12): embedded bootstrap — shared across all devices.
-# Device creds (20-22): issued by AWS per-device during provisioning.
+# Device creds (100-102): issued by AWS per-device during provisioning.
+#   These MUST match CONFIG_CONEXIO_CLOUD_CA_TAG / CERT_TAG / KEY_TAG
+#   in the main SDK (src/cert_store.c) so the app sample can find them
+#   after flashing over the provisioning sample.
 
 config STRATUS_CLAIM_CA_TAG
 	int "TLS tag: Root CA for claim phase"
@@ -40,14 +43,14 @@ config STRATUS_CLAIM_KEY_TAG
 
 config STRATUS_DEVICE_CA_TAG
 	int "TLS tag: Root CA for device phase"
-	default 20
+	default 100
 
 config STRATUS_DEVICE_CERT_TAG
 	int "TLS tag: Device certificate (issued by AWS)"
-	default 21
+	default 101
 
 config STRATUS_DEVICE_KEY_TAG
 	int "TLS tag: Device private key (issued by AWS)"
-	default 22
+	default 102
 
 source "Kconfig.zephyr"

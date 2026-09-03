@@ -7,13 +7,15 @@
  * cert_store.h — Modem credential management
  *
  * CLAIM creds (tags 10-12): shared bootstrap, embedded in firmware.
- * DEVICE creds (tags 20-22): unique per-device, written by AWS during provisioning.
+ * DEVICE creds (tags 100-102): unique per-device, written by AWS during provisioning.
+ *   Tags 100-102 match CONFIG_CONEXIO_CLOUD_CA_TAG/CERT_TAG/KEY_TAG in the
+ *   main SDK so the app sample finds them after flashing over this firmware.
  */
 
 /** Provision claim Root CA + cert + key into modem. Skips if already present. */
 int cert_store_provision_claim_creds(void);
 
-/** Delete device cert (tag 21) and key (tag 22) if present. Always safe to call. */
+/** Delete device cert (tag 101) and key (tag 102) if present. Always safe to call. */
 void cert_store_clear_device_creds(void);
 
 /**
@@ -22,7 +24,7 @@ void cert_store_clear_device_creds(void);
  */
 int cert_store_write_device_creds(const char *cert, const char *key);
 
-/** True if device cert (tag 21) exists in modem — indicates provisioning done. */
+/** True if device cert (tag 101) exists in modem — indicates provisioning done. */
 bool cert_store_device_creds_exist(void);
 
 #endif /* CERT_STORE_H */
