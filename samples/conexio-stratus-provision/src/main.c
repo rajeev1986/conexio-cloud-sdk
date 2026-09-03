@@ -548,14 +548,26 @@ int main(void)
 
 #if defined(CONFIG_STRATUS_FORCE_REPROVISION)
     /* Developer escape hatch — force a clean re-provisioning cycle.
-     * Set CONFIG_STRATUS_FORCE_REPROVISION=y in prj.conf, flash once,
-     * then remove the option and flash again. Never use in production. */
-    if (g_provisioned || creds_exist) {
-        LOG_WRN("FORCE_REPROVISION: clearing all device credentials and NVS flag");
-        cert_store_clear_all_device_creds();
-        settings_delete(PROV_SETTINGS_KEY);
-        g_provisioned = false;
-        creds_exist   = false;
+     * Self-clearing: uses a NVS key so it only fires ONCE even if the
+     * firmware keeps CONFIG_STRATUS_FORCE_REPROVISION=y across reboots. */
+    {
+        bool already_forced = false;
+        int forced_val = 0;
+        settings_runtime_get("prov/forced", &forced_val, sizeof(forced_val));
+        already_forced = (forced_val == 1);
+
+        if (!already_forced && (g_provisioned || creds_exist)) {
+            LOG_WRN("FORCE_REPROVISION: clearing all device credentials (one-time)");
+            cert_store_clear_all_device_creds();
+            settings_delete(PROV_SETTINGS_KEY);
+            g_provisioned = false;
+            creds_exist   = false;
+            /* Mark as done so next boot skips this block */
+            int done = 1;
+            settings_save_one("prov/forced", &done, sizeof(done));
+        } else if (already_forced) {
+            LOG_INF("FORCE_REPROVISION already ran — skipping");
+        }
     }
 #endif
 
