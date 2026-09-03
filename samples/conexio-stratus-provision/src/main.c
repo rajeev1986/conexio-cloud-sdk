@@ -545,8 +545,18 @@ int main(void)
     bool creds_exist = cert_store_device_creds_exist();
     LOG_INF("Boot check: g_provisioned=%d cert_exists=%d",
             (int)g_provisioned, (int)creds_exist);
-    bool pre_check_provisioned = g_provisioned || creds_exist;
+
+    /* Only skip AT%KEYGEN if BOTH the provisioned flag is set AND the device
+     * cert is present in the modem.  If cert_exists=0 (e.g. after a tag
+     * migration from 21→101), we must re-run provisioning to get a new cert. */
+    bool pre_check_provisioned = g_provisioned && creds_exist;
     if (!pre_check_provisioned) {
+        if (g_provisioned && !creds_exist) {
+            LOG_WRN("Provisioned flag set but device cert missing — re-provisioning");
+            /* Clear the stale flag so run_provisioning() is called below */
+            g_provisioned = false;
+            settings_delete(PROV_SETTINGS_KEY);
+        }
         ret = provision_prepare_csr();
         if (ret) {
             LOG_ERR("provision_prepare_csr failed: %d", ret);
@@ -587,7 +597,8 @@ int main(void)
     }
 
     /* ── PROVISIONING PATH ───────────────────────────────────────────────── */
-    bool already_provisioned = g_provisioned || creds_exist;
+    /* Re-evaluate after potential flag reset above */
+    bool already_provisioned = g_provisioned && creds_exist;
 
     if (!already_provisioned) {
         LOG_INF("Device not provisioned — starting Fleet Provisioning");
