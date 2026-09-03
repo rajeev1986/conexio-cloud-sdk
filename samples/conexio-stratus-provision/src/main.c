@@ -122,7 +122,8 @@ static int settings_h_set(const char *key, size_t len,
         if (rc > 0) {
             g_force_ran = val;
         }
-    }    return 0;
+    }
+    return 0;
 }
 
 SETTINGS_STATIC_HANDLER_DEFINE(prov_handler, "prov", NULL,
@@ -573,7 +574,8 @@ int main(void)
             /* Persist the flag so next boot skips this block */
             bool done = true;
             settings_save_one("prov/forced", &done, sizeof(done));
-            g_force_ran = true;        } else if (g_force_ran) {
+            g_force_ran = true;
+        } else if (g_force_ran) {
             LOG_INF("FORCE_REPROVISION already ran — skipping");
         }
     }
