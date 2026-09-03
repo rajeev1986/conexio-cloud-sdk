@@ -665,7 +665,9 @@ int main(void)
         .events = ZSOCK_POLLIN,
     };
 
-    int64_t last_pub_ms   = 0;
+    /* Set to -(interval * 1000) so the first publish fires immediately
+     * after MQTT connects rather than waiting a full interval. */
+    int64_t last_pub_ms   = -(int64_t)telemetry_interval_sec * 1000;
     int     retry_delay_s = RETRY_BASE_S;
     int     retry_count   = 0;
 
