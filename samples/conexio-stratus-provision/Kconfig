@@ -53,4 +53,14 @@ config STRATUS_DEVICE_KEY_TAG
 	int "TLS tag: Device private key (issued by AWS)"
 	default 102
 
+config STRATUS_FORCE_REPROVISION
+	bool "Force re-provisioning on next boot (developer escape hatch)"
+	default n
+	help
+	  When enabled, clears all device credentials and the provisioning NVS
+	  flag on the next boot, forcing a full re-provisioning cycle.
+	  Use this to recover from a mismatched cert/key state.
+	  Set to y in prj.conf, flash once, then remove and flash again.
+	  NEVER enable in production builds.
+
 source "Kconfig.zephyr"

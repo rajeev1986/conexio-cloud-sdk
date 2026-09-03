@@ -546,6 +546,22 @@ int main(void)
     LOG_INF("Boot check: g_provisioned=%d cert_exists=%d",
             (int)g_provisioned, (int)creds_exist);
 
+#if defined(CONFIG_STRATUS_FORCE_REPROVISION)
+    /* Developer escape hatch — force a clean re-provisioning cycle.
+     * Set CONFIG_STRATUS_FORCE_REPROVISION=y in prj.conf, flash once,
+     * then remove the option and flash again. Never use in production. */
+    if (g_provisioned || creds_exist) {
+        LOG_WRN("FORCE_REPROVISION: clearing all device credentials and NVS flag");
+        cert_store_clear_device_creds();
+        /* Also delete the key — we need a fresh AT%KEYGEN */
+        modem_key_mgmt_delete(CONFIG_STRATUS_DEVICE_KEY_TAG,
+                              MODEM_KEY_MGMT_CRED_TYPE_PRIVATE_CERT);
+        settings_delete(PROV_SETTINGS_KEY);
+        g_provisioned = false;
+        creds_exist   = false;
+    }
+#endif
+
     /* Only skip AT%KEYGEN if BOTH the provisioned flag is set AND the device
      * cert is present in the modem.  If cert_exists=0 (e.g. after a tag
      * migration from 21→101), we must re-run provisioning to get a new cert. */
