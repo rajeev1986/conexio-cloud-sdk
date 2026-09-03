@@ -553,6 +553,17 @@ int main(void)
     LOG_INF("Boot check: g_provisioned=%d cert_exists=%d",
             (int)g_provisioned, (int)creds_exist);
 
+    /* Dump modem credential inventory for diagnostics */
+    {
+        static char cmng_resp[512];
+        int rc = nrf_modem_at_cmd(cmng_resp, sizeof(cmng_resp), "AT%%CMNG=1");
+        if (rc == 0) {
+            LOG_INF("AT%%CMNG=1 (credential list):\n%s", cmng_resp);
+        } else {
+            LOG_WRN("AT%%CMNG=1 failed: %d", rc);
+        }
+    }
+
 #if defined(CONFIG_STRATUS_FORCE_REPROVISION)
     /* Developer escape hatch — force a clean re-provisioning cycle.
      * Self-clearing via NVS 'prov/forced' flag — only fires ONCE even if
