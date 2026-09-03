@@ -20,7 +20,6 @@
 #include <modem/nrf_modem_lib.h>
 #include <modem/lte_lc.h>
 #include <modem/modem_info.h>
-#include <nrf_modem_at.h>
 
 #include <date_time.h>
 #include <cJSON.h>
@@ -686,17 +685,6 @@ int main(void)
     }
 
     mqtt_client_setup(false /* device creds */);
-
-    /* Dump modem credential inventory for diagnostics (after LTE — modem in normal mode) */
-    {
-        static char cmng_resp[2048];
-        int rc = nrf_modem_at_cmd(cmng_resp, sizeof(cmng_resp), "AT%%CMNG=1");
-        if (rc == 0) {
-            LOG_INF("Modem credentials:\n%s", cmng_resp);
-        } else {
-            LOG_WRN("AT%%CMNG=1 failed: %d", rc);
-        }
-    }
 
     /* ── Main loop with exponential backoff ──────────────────────────────── */
     /* Reconnect backoff: starts at RETRY_BASE_S, doubles each attempt,
