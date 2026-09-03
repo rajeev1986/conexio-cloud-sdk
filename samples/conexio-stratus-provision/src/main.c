@@ -20,6 +20,7 @@
 #include <modem/nrf_modem_lib.h>
 #include <modem/lte_lc.h>
 #include <modem/modem_info.h>
+#include <nrf_modem_at.h>
 
 #include <date_time.h>
 #include <cJSON.h>
