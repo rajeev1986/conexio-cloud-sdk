@@ -48,6 +48,7 @@ static char g_device_id[DEVICE_ID_LEN];
 /* ── Provisioning state ──────────────────────────────────────────────────── */
 #define PROV_SETTINGS_KEY "prov/done"
 static bool g_provisioned;
+static bool g_force_ran;  /* set from NVS — tracks if FORCE_REPROVISION already ran */
 
 /* ── Reboot counter (NVS) ────────────────────────────────────────────────── */
 #define NVS_REBOOT_ID 1U  /* unused — reboot counter now stored via Settings */
@@ -115,6 +116,12 @@ static int settings_h_set(const char *key, size_t len,
         }
     } else if (strcmp(key, "reboot_cnt") == 0) {
         read_cb(cb_arg, &g_reboot_cnt, sizeof(g_reboot_cnt));
+    } else if (strcmp(key, "forced") == 0) {
+        bool val = false;
+        ssize_t rc = read_cb(cb_arg, &val, sizeof(val));
+        if (rc > 0) {
+            g_force_ran = val;
+        }
     }
     return 0;
 }
@@ -548,24 +555,20 @@ int main(void)
 
 #if defined(CONFIG_STRATUS_FORCE_REPROVISION)
     /* Developer escape hatch — force a clean re-provisioning cycle.
-     * Self-clearing: uses a NVS key so it only fires ONCE even if the
-     * firmware keeps CONFIG_STRATUS_FORCE_REPROVISION=y across reboots. */
+     * Self-clearing via NVS 'prov/forced' flag — only fires ONCE even if
+     * FORCE_REPROVISION=y stays in the firmware across multiple reboots. */
     {
-        bool already_forced = false;
-        int forced_val = 0;
-        settings_runtime_get("prov/forced", &forced_val, sizeof(forced_val));
-        already_forced = (forced_val == 1);
-
-        if (!already_forced && (g_provisioned || creds_exist)) {
+        if (!g_force_ran && (g_provisioned || creds_exist)) {
             LOG_WRN("FORCE_REPROVISION: clearing all device credentials (one-time)");
             cert_store_clear_all_device_creds();
             settings_delete(PROV_SETTINGS_KEY);
             g_provisioned = false;
             creds_exist   = false;
-            /* Mark as done so next boot skips this block */
-            int done = 1;
+            /* Persist the flag so next boot skips this block */
+            bool done = true;
             settings_save_one("prov/forced", &done, sizeof(done));
-        } else if (already_forced) {
+            g_force_ran = true;
+        } else if (g_force_ran) {
             LOG_INF("FORCE_REPROVISION already ran — skipping");
         }
     }
