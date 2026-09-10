@@ -97,6 +97,7 @@
 #include <cJSON_os.h>
 #include <modem/nrf_modem_lib.h>
 #include <modem/modem_info.h>
+#include <modem/lte_lc.h>
 #include <date_time.h>                /* NTP time sync + ISO-8601 timestamp */
 #include <math.h>                     /* isnan() for sensor callback return */
 
