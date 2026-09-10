@@ -2748,6 +2748,32 @@ int conexio_cloud_init(conexio_cloud_event_cb_t cb)
 
     /* ── Step 6: Connect LTE (if SDK manages it) ────────────────────── */
 #if defined(CONFIG_CONEXIO_CLOUD_MANAGE_LTE)
+
+    /* Request PSM parameters BEFORE attaching to the network so the modem
+     * includes them in the Attach Request. Per 3GPP TS 24.008, PSM is
+     * negotiated at Attach and TAU — requesting after attach means the
+     * granted values only take effect at the next TAU (hours away on
+     * most carriers). Requesting before attach applies them immediately. */
+#if defined(CONFIG_CONEXIO_CLOUD_PSM)
+    if (!IS_ENABLED(CONFIG_CONEXIO_CLOUD_EDRX)) {
+        int psm_ret = lte_lc_psm_param_set_seconds(
+            CONFIG_CONEXIO_CLOUD_PSM_TAU_SEC,
+            CONFIG_CONEXIO_CLOUD_PSM_ACTIVE_TIME_SEC);
+        if (psm_ret) {
+            LOG_WRN("Pre-attach PSM param set failed (%d) — "
+                    "using Kconfig defaults", psm_ret);
+        }
+        psm_ret = lte_lc_psm_req(true);
+        if (psm_ret) {
+            LOG_WRN("Pre-attach PSM enable failed (%d)", psm_ret);
+        } else {
+            LOG_DBG("PSM requested before attach: TAU=%ds active=%ds",
+                    CONFIG_CONEXIO_CLOUD_PSM_TAU_SEC,
+                    CONFIG_CONEXIO_CLOUD_PSM_ACTIVE_TIME_SEC);
+        }
+    }
+#endif /* CONFIG_CONEXIO_CLOUD_PSM */
+
     ret = conexio_lte_connect(CONFIG_CONEXIO_CLOUD_LTE_TIMEOUT_SEC);
     if (ret) {
         LOG_ERR("LTE connection failed (%d)", ret);

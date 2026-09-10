@@ -108,30 +108,15 @@ int power_mgr_init(const struct power_mgr_config *cfg)
 
     if (cfg->psm_enable && !cfg->edrx_enable) {
         /*
-         * Request PSM with T3412 (TAU) and T3324 (active time) timers.
+         * PSM parameters were already set and requested before LTE attach
+         * in conexio_cloud_init() (Step 6 pre-attach block) so the modem
+         * included them in the Attach Request and negotiated immediately.
          *
-         * Timer encoding uses 3GPP TS 24.008 format — the nRF SDK accepts
-         * second values and converts internally.
-         *
-         * Good values for 60s telemetry:
-         *   TAU = 3600s  (1 hour network keepalive)
-         *   Active = 10s (10s to connect, publish, disconnect)
+         * We only register the event handler here to receive the
+         * LTE_LC_EVT_PSM_UPDATE confirmation with the granted values.
+         * Calling lte_lc_psm_req() again here would be redundant and
+         * could trigger an unnecessary TAU.
          */
-        /* Use lte_lc_psm_param_set_seconds() — takes integer seconds directly
-         * and handles the 3GPP T3412/T3324 binary encoding internally.
-         * This is simpler and more reliable than manual binary string encoding. */
-        int ret = lte_lc_psm_param_set_seconds(cfg->psm_tau_sec,
-                                                cfg->psm_active_time_sec);
-        if (ret) {
-            LOG_WRN("lte_lc_psm_param_set_seconds failed (%d) — "
-                    "falling back to NCS Kconfig timer values", ret);
-        }
-
-        ret = lte_lc_psm_req(true);
-        if (ret) {
-            LOG_WRN("lte_lc_psm_req failed (%d)", ret);
-        }
-
         LOG_INF("PSM requested: TAU=%ds, active=%ds",
                 cfg->psm_tau_sec, cfg->psm_active_time_sec);
 
