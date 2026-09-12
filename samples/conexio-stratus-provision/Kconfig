@@ -11,6 +11,12 @@ config STRATUS_AWS_ENDPOINT
 config STRATUS_FLEET_TEMPLATE
 	string "AWS IoT Fleet Provisioning template name"
 	default "ConexioFleetTemplate"
+	help
+	  AWS IoT Fleet Provisioning template to use.
+	  Production:  "ConexioFleetTemplate"
+	  Development: "ConexioFleetTemplate-dev"
+	  Staging:     "ConexioFleetTemplate-staging"
+	  Override in prj.conf for non-production builds.
 
 config STRATUS_TELEMETRY_INTERVAL_SEC
 	int "Telemetry publish interval (seconds)"
