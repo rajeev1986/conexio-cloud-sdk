@@ -54,6 +54,14 @@ if(CONFIG_CONEXIO_CLOUD)
     target_sources(app PRIVATE src/cell_location.c)
   endif()
 
+  # ── CBOR binary encoding — smaller payloads for LTE-M/NB-IoT ─────────────
+  # Enable with CONFIG_CONEXIO_CLOUD_CBOR=y in prj.conf.
+  # cbor_encoder.h is header-only — no .c file needed.
+  # zcbor is pulled in automatically via the ZCBOR Kconfig select.
+  if(CONFIG_CONEXIO_CLOUD_CBOR)
+    target_compile_definitions(app PRIVATE CONEXIO_CLOUD_CBOR_ENABLED)
+  endif()
+
   # ── Log streaming — Zephyr log backend → cloud telemetry "_log" array ────────
   # Enable with CONFIG_CONEXIO_CLOUD_LOG_STREAM=y in prj.conf.
   if(CONFIG_CONEXIO_CLOUD_LOG_STREAM)

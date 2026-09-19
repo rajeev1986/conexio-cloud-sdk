@@ -132,6 +132,43 @@ config CONEXIO_CLOUD_STATIC_DEVICE_ID
 
 menu "Telemetry"
 
+config CONEXIO_CLOUD_CBOR
+	bool "Use CBOR binary encoding for telemetry payloads"
+	default n
+	select ZCBOR
+	select ZCBOR_CANONICAL
+	help
+	  When enabled, telemetry and diagnostics payloads are encoded as CBOR
+	  binary instead of JSON text. CBOR payloads are typically 50–70% smaller
+	  than the equivalent JSON, significantly reducing SIM data usage on
+	  LTE-M/NB-IoT deployments.
+
+	  The CBOR payload is self-describing (keys are embedded as text strings)
+	  so no fixed schema is required on the cloud side. The Conexio Cloud
+	  backend automatically detects CBOR payloads (magic byte 0x02 at offset 0
+	  inside the outer CBOR map) and decodes them to the standard JSON metrics
+	  format before processing.
+
+	  When disabled (default), JSON encoding is used — backwards compatible
+	  with all existing dashboard features and cloud pipeline components.
+	  Enable with CONFIG_CONEXIO_CLOUD_CBOR=y in prj.conf.
+
+	  Note: The offline buffer stores payloads as raw bytes. When CBOR is
+	  enabled, buffered offline payloads are also CBOR-encoded and replayed
+	  as CBOR to the cloud on reconnect. Both formats are accepted.
+
+config CONEXIO_CLOUD_CBOR_BUFFER_SIZE
+	int "CBOR payload buffer size (bytes)"
+	default 512
+	range 256 2048
+	depends on CONEXIO_CLOUD_CBOR
+	help
+	  Static buffer size for building CBOR payloads. Must be large enough
+	  to hold the complete encoded payload for the largest expected publish
+	  (diagnostics with all boot-once metrics is the largest: ~350 bytes).
+	  Increase if you have many application metrics or long string values.
+	  The buffer is stack-allocated in build_cbor_payload_for_category().
+
 config CONEXIO_CLOUD_INTERVAL_SEC
 	int "Telemetry publish interval (seconds)"
 	default 3600
@@ -264,7 +301,7 @@ config CONEXIO_CLOUD_MANAGE_LTE
 
 config CONEXIO_CLOUD_LTE_TIMEOUT_SEC
 	int "LTE registration timeout (seconds)"
-	default 90
+	default 300
 	range 30 300
 	depends on CONEXIO_CLOUD_MANAGE_LTE
 
