@@ -14,16 +14,17 @@ and the cellular location module.
 
 1. [Quick Start](#quick-start)
 2. [Application Structure](#application-structure)
-3. [Telemetry Data Packet](#telemetry-data-packet)
-4. [Cellular Location Feature](#cellular-location-feature)
-5. [HERE Positioning API — Pricing](#here-positioning-api--pricing)
-6. [Firmware Configuration Reference](#firmware-configuration-reference)
-7. [Build Variants](#build-variants)
-8. [Commands and Settings](#commands-and-settings)
-9. [Battery Metrics (nPM1300)](#battery-metrics-npm1300)
-10. [FOTA — Firmware Over-the-Air](#fota--firmware-over-the-air)
-11. [Power Management](#power-management)
-12. [Offline Buffering](#offline-buffering)
+3. [Payload Encoding — CBOR vs JSON](#payload-encoding--cbor-vs-json)
+4. [Telemetry Data Packet](#telemetry-data-packet)
+5. [Cellular Location Feature](#cellular-location-feature)
+6. [HERE Positioning API — Pricing](#here-positioning-api--pricing)
+7. [Firmware Configuration Reference](#firmware-configuration-reference)
+8. [Build Variants](#build-variants)
+9. [Commands and Settings](#commands-and-settings)
+10. [Battery Metrics (nPM1300)](#battery-metrics-npm1300)
+11. [FOTA — Firmware Over-the-Air](#fota--firmware-over-the-air)
+12. [Power Management](#power-management)
+13. [Offline Buffering](#offline-buffering)
 
 ---
 
@@ -65,6 +66,75 @@ The application uses a single SDK include:
 
 Everything else — MQTT, TLS, modem, NTP, PSM, FOTA, retry — is auto-selected
 by the SDK Kconfig.
+
+---
+
+## Payload Encoding — CBOR vs JSON
+
+The SDK supports two payload encodings, selectable via a single Kconfig option.
+The **application code is 100% encoding-agnostic** — no changes to sensor callbacks,
+metric names, or any `main.c` code are needed to switch between them.
+
+### CBOR (default, recommended)
+
+```kconfig
+CONFIG_CONEXIO_CLOUD_CBOR=y   # in prj.conf
+```
+
+CBOR (Concise Binary Object Representation, RFC 8949) encodes the same telemetry
+data as compact binary instead of JSON text.
+
+**Why CBOR?**
+
+| | JSON | CBOR |
+|---|---|---|
+| Typical payload size | ~150–200 bytes | ~60–100 bytes |
+| Field names | Repeated in full as strings | Embedded as compact text strings |
+| Numbers | ASCII text (e.g. `29.6` = 4 bytes) | Typed binary (float16 = 2 bytes) |
+| Cloud decoding | Native | Auto-detected and decoded by Conexio Cloud |
+| App code changes | None | None |
+| Firmware deps | cJSON (already in SDK) | zcbor (already in NCS) |
+
+For a device publishing every 60 seconds, switching from JSON to CBOR saves
+approximately **50–70 KB/day per device** in SIM data. At scale this is significant.
+
+**How the cloud handles CBOR:**
+- The Conexio Cloud ingestion Lambda detects CBOR payloads by their first byte
+  (0xa0–0xbf, the CBOR map major type range — never overlaps with JSON `{` = 0x7b)
+- CBOR is decoded to the standard JSON metrics format before any dashboard processing
+- All existing dashboard widgets, fleet health charts, alerts, and FOTA work identically
+
+### JSON (backwards-compatible fallback)
+
+```kconfig
+CONFIG_CONEXIO_CLOUD_CBOR=n   # in prj.conf
+```
+
+Set to `=n` to revert to JSON text encoding. Useful for:
+- Debugging with a MQTT client that shows human-readable JSON
+- Compatibility with a cloud environment that has not yet been updated
+- Comparing payload sizes during development
+
+### CBOR wire format
+
+The SDK encodes a self-describing CBOR map with the following structure:
+
+```
+{
+  "dev_id"  : "355025934980275",    // tstr — 15-digit IMEI
+  "ts"      : "2026-09-19T...",     // tstr — ISO-8601 UTC timestamp
+  "seq"     : 42,                   // uint — per-topic sequence number
+  "topic"   : "telemetry",         // tstr — topic type
+  "metrics" : {                    // map — all metric key-value pairs
+    "_rssi"       : -76,           // int
+    "temperature" : 29.6,          // float (float16 where precision allows)
+    ...
+  }
+}
+```
+
+Field names are preserved in full as CBOR text strings — no fixed schema is
+needed on the cloud side.
 
 ---
 
@@ -315,6 +385,11 @@ Key options in `prj.conf`:
 CONFIG_CONEXIO_CLOUD=y
 CONFIG_CONEXIO_CLOUD_INTERVAL_SEC=30      # Telemetry interval (s)
 
+# CBOR binary encoding (50-70% smaller payloads vs JSON)
+CONFIG_CONEXIO_CLOUD_CBOR=y              # Enable CBOR (default, recommended)
+CONFIG_CONEXIO_CLOUD_CBOR_BUFFER_SIZE=512 # Static encode buffer (bytes)
+# Set CONFIG_CONEXIO_CLOUD_CBOR=n to revert to JSON text encoding
+
 # PSM — keep modem in µA sleep between publishes
 CONFIG_CONEXIO_CLOUD_PSM=y
 CONFIG_CONEXIO_CLOUD_PSM_TAU_SEC=7200     # Network keepalive every 2h
@@ -347,7 +422,7 @@ CONFIG_CELL_LOCATION=y                   # Enable AT%NCELLMEAS module
 
 ### Development (default)
 
-Uses `prj.conf` only. UART console enabled, log level INF.
+Uses `prj.conf` only. UART console enabled, log level INF. CBOR encoding enabled.
 
 ```bash
 west build -b conexio_stratus_pro/nrf9151/ns
@@ -362,9 +437,24 @@ west build -b conexio_stratus_pro/nrf9151/ns -- \
   -DEXTRA_CONF_FILE=debug.conf
 ```
 
+### JSON debug build (human-readable MQTT output)
+
+Reverts to JSON encoding so you can read payloads directly in an MQTT client.
+Create a `json_debug.conf` overlay:
+
+```kconfig
+# json_debug.conf — disable CBOR for human-readable debugging
+CONFIG_CONEXIO_CLOUD_CBOR=n
+```
+
+```bash
+west build -b conexio_stratus_pro/nrf9151/ns -- \
+  -DEXTRA_CONF_FILE="debug.conf;json_debug.conf"
+```
+
 ### Production / Low-Power
 
-Disables UART console and logging. Reduces current draw.
+Disables UART console and logging. Reduces current draw. CBOR encoding enabled.
 
 ```bash
 west build -b conexio_stratus_pro/nrf9151/ns -- \

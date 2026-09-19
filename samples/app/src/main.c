@@ -20,6 +20,15 @@
  * │    _rssi, _snr, _reboot_cnt, _battery_mv, _sdk_version — auto-metrics  │
  * │    _app_fw_version — auto-published from app VERSION file               │
  * │    conexio_cloud_register_interval(min, max) — Golioth-style            │
+ * │                                                                         │
+ * │  Payload encoding (set in prj.conf):                                    │
+ * │    CONFIG_CONEXIO_CLOUD_CBOR=y  — CBOR binary (default, ~50-70%        │
+ * │                                   smaller than JSON on LTE-M/NB-IoT)   │
+ * │    CONFIG_CONEXIO_CLOUD_CBOR=n  — JSON text (backwards-compatible)     │
+ * │                                                                         │
+ * │  The application code is 100% encoding-agnostic.  The same main.c,     │
+ * │  sensor callbacks, and metric names work for both JSON and CBOR.        │
+ * │  The SDK and cloud backend handle all encoding/decoding transparently.  │
  * └─────────────────────────────────────────────────────────────────────────┘
  */
 
