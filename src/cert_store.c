@@ -108,6 +108,16 @@ int cert_store_provision_from_config(const struct conexio_cloud_config_t *cfg)
         return ret;
     }
 
+#if defined(CONFIG_CONEXIO_CLOUD_INGEST_KEY_ENABLED)
+    /* ── Ingest key mode: Root CA only, no client cert/key needed ───────
+     * The device authenticates via MQTT Custom Authorizer (ingest key in
+     * the MQTT username field) — no client TLS certificate is presented.
+     * The Root CA is still required to verify the broker's identity.     */
+    LOG_INF("Ingest key mode — client cert/key not required (tag %d, %d skipped)",
+            CONFIG_CONEXIO_CLOUD_CERT_TAG, CONFIG_CONEXIO_CLOUD_KEY_TAG);
+    return 0;
+#endif
+
     /* ── 2. Device cert (tag 101) — must exist from fleet provisioning ── */
     bool cert_exists = false;
     ret = modem_key_mgmt_exists(CONFIG_CONEXIO_CLOUD_CERT_TAG,
