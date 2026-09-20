@@ -7,9 +7,6 @@
  * Thin chainable wrapper around Zephyr's zcbor library (already present in
  * nRF Connect SDK — no extra dependencies required).
  *
- * Adapted from the VibeTrack cbor_wrapper.h pattern (Conexio, 2025).
- * All Golioth-specific types and status codes have been replaced with
- * Zephyr equivalents.
  *
  * Usage pattern:
  *

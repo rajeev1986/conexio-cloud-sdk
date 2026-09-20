@@ -111,7 +111,7 @@ config CONEXIO_CLOUD_STATIC_ROOT_CA_URL
 	depends on CONEXIO_CLOUD_STATIC_BROKER_ENABLED
 	help
 	  URL to download the Root CA PEM. The default covers the Conexio Cloud
-	  endpoint (backed by AWS ACM). Do not change unless self-hosting.
+	  endpoint. Do not change unless self-hosting.
 
 config CONEXIO_CLOUD_STATIC_DEVICE_ID_ENABLED
 	bool "Use static device ID (overrides IMEI)"
@@ -328,10 +328,6 @@ config CONEXIO_CLOUD_MQTT_KEEPALIVE_SEC
 #     password  = raw ingest key (IoT Core base64-encodes before passing to Lambda)
 #   Port: 8883 (standard TLS — no ALPN needed, works on nRF9151 modem)
 #
-# The endpoint URL is retrieved after CDK deploy:
-#   aws iot describe-domain-configuration \
-#     --domain-configuration-name conexio-ingest[-staging|-dev] \
-#     --query domainName --output text
 #
 # Generate a key in the Conexio Console → Organization → Ingest Keys.
 # The device IMEI must be pre-registered in All Devices before connecting.
@@ -347,7 +343,7 @@ config CONEXIO_CLOUD_INGEST_KEY
 	default ""
 	depends on CONEXIO_CLOUD_MQTT
 	help
-	  When set, the SDK authenticates via an AWS IoT Core domain configuration
+	  When set, the SDK authenticates via Conexio cloud ingest domain configuration
 	  with CUSTOM_AUTH + SECURE_MQTT instead of mutual TLS client certificates.
 	  The ingest key is sent as the MQTT password field on port 8883.
 	  No ALPN, no port 443, no fleet provisioning required.
@@ -374,23 +370,13 @@ config CONEXIO_CLOUD_INGEST_KEY_ENABLED
 	  values cannot be tested directly in preprocessor expressions.
 
 config CONEXIO_CLOUD_INGEST_ENDPOINT
-	string "AWS IoT Core ingest domain config endpoint hostname"
+	string "Conexio Cloud ingest domain config endpoint hostname"
 	default "ingest.mqtt.cloud.conexiotech.com"
 	depends on CONEXIO_CLOUD_INGEST_KEY_ENABLED
 	help
 	  MQTT broker hostname for the Conexio ingest endpoint.
 	  When CONFIG_CONEXIO_CLOUD_INGEST_KEY is set, the SDK automatically
 	  connects to this endpoint instead of the standard fleet endpoint.
-
-	  The default (ingest.mqtt.cloud.conexiotech.com) is correct for all
-	  production builds — no change needed.
-
-	  For staging builds override with the staging endpoint:
-	    CONFIG_CONEXIO_CLOUD_INGEST_ENDPOINT="d02002471t82kqdc2ri5t-ats.iot.us-east-1.amazonaws.com"
-
-	  The endpoint uses authenticationType=CUSTOM_AUTH + SECURE_MQTT so the
-	  Custom Authorizer Lambda fires on every CONNECT at port 8883.
-	  No ALPN, no client certificate required.
 
 # ── TLS tags (internal — change only on conflict) ─────────────────────────────
 
@@ -480,7 +466,7 @@ config CONEXIO_CLOUD_TOPIC_VERSION
 	  Changing this value migrates all topics to the new version simultaneously.
 	  To migrate gradually, deploy firmware with "v2" to a subset of devices
 	  while keeping "v1" IoT Rules active — both versions coexist safely because
-	  the AWS IoT Rules are independent per topic.
+	  the Cloud IoT Rules are independent per topic.
 
 	  Default "v1" — do not change until a breaking schema change requires it.
 
@@ -737,7 +723,7 @@ config CONEXIO_CLOUD_WATCHDOG_TIMEOUT_SEC
 
 endmenu # Retry and Watchdog
 
-# ── Cellular Location (AWS Location Service) ─────────────────────────────────
+# ── Cellular Location ─────────────────────────────────
 
 menu "Cellular Location"
 
@@ -753,7 +739,7 @@ config CELL_LOCATION
 	  _loc_rsrp, _loc_timing_adv, _loc_neighbors) and queued for the next
 	  regular telemetry publish.
 	  The cloud Lambda resolves the cell data to coordinates using HERE /
-	  Combain or another positioning API and stores the result in AWS
+	  Combain or another positioning API and stores the result in the
 	  Location Tracker.
 	  No positioning solver runs on the device — firmware stays thin and
 	  solver-agnostic.
@@ -767,7 +753,7 @@ config CELL_LOCATION_INTERVAL_SEC
 	  How often to trigger an AT%NCELLMEAS measurement, in seconds.
 	  This is independent from the telemetry publish interval so you can
 	  publish telemetry frequently while solving location only a few times
-	  per day — keeping HERE / AWS Location API costs minimal.
+	  per day.
 
 	  Recommended values:
 	    28800  (8 hours)  — 3 fixes/day; typical production field tracking
