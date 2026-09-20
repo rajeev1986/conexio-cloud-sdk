@@ -23,7 +23,7 @@
 static int64_t ref_time;
 
 static const struct battery_model battery_model = {
-#include "battery_model.inc"
+#include "LP963450_25C.inc"
 };
 
 static int read_sensors(const struct device *charger, float *voltage, float *current, float *temp,
