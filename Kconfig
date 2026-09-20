@@ -371,7 +371,7 @@ config CONEXIO_CLOUD_INGEST_KEY_ENABLED
 
 config CONEXIO_CLOUD_INGEST_ENDPOINT
 	string "Conexio Cloud ingest domain config endpoint hostname"
-	default "ingest.mqtt.cloud.conexiotech.com"
+	default "d06944271tnaxvzkw1702-ats.iot.us-east-1.amazonaws.com"
 	depends on CONEXIO_CLOUD_INGEST_KEY_ENABLED
 	help
 	  MQTT broker hostname for the Conexio ingest endpoint.
