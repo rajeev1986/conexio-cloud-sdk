@@ -611,8 +611,8 @@ int transport_connect(void)
 #if INGEST_KEY_MODE
     /* Ingest key mode: pass key as MQTT username, no client certificate.
      * AWS IoT Core Custom Authorizer reads the username to validate the key. */
-    static const struct mqtt_utf8 ingest_key_username = {
-        .utf8 = (const uint8_t *)CONFIG_CONEXIO_CLOUD_INGEST_KEY,
+    static struct mqtt_utf8 ingest_key_username = {
+        .utf8 = (uint8_t *)CONFIG_CONEXIO_CLOUD_INGEST_KEY,
         .size = sizeof(CONFIG_CONEXIO_CLOUD_INGEST_KEY) - 1,
     };
     client.user_name = &ingest_key_username;
