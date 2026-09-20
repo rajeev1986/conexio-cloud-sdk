@@ -3391,6 +3391,13 @@ int conexio_cloud_publish_single(char category)
 
 #if defined(CONFIG_CONEXIO_CLOUD_CBOR)
     /* ── CBOR publish path ───────────────────────────────────────────── */
+    /* Location topic always uses JSON regardless of CBOR setting.
+     * The _loc_* metrics contain variable-length string fields (_loc_nbrs)
+     * and are processed by a dedicated cloud Lambda (IotDashboardLocationRule)
+     * that expects JSON. This avoids needing a separate binary location rule. */
+    if (category == TOPIC_CAT_LOCATION) {
+        goto json_publish;
+    }
     uint8_t cbor_buf[CONFIG_CONEXIO_CLOUD_CBOR_BUFFER_SIZE];
     size_t  cbor_len = 0;
     int cbor_ret = build_cbor_payload_for_category(category,
@@ -3405,6 +3412,7 @@ int conexio_cloud_publish_single(char category)
     return ret;
 #else
     /* ── JSON publish path (default) ────────────────────────────────── */
+    json_publish:;
     char *payload = build_payload_for_category(category);
     if (!payload) return -ENOMEM;
     int ret = transport_publish_to(category, payload, strlen(payload));
@@ -3471,8 +3479,8 @@ int conexio_cloud_publish(void)
         }
 
 #if defined(CONFIG_CONEXIO_CLOUD_CBOR)
-        /* CBOR publish path */
-        {
+        /* CBOR publish path — location topic always uses JSON (see below) */
+        if (cat != TOPIC_CAT_LOCATION) {
             uint8_t cbor_buf[CONFIG_CONEXIO_CLOUD_CBOR_BUFFER_SIZE];
             size_t  cbor_len = 0;
             int cbor_ret = build_cbor_payload_for_category(cat,
@@ -3493,24 +3501,25 @@ int conexio_cloud_publish(void)
                         cat, ret);
                 overall = ret;
             }
+            continue; /* next category */
         }
-#else
-        /* JSON publish path (default) */
-        char *payload = build_payload_for_category(cat);
-        if (!payload) {
-            LOG_ERR("build_payload_for_category(%c) returned NULL", cat);
-            overall = -ENOMEM;
-            continue;
+        /* Location falls through to JSON path below */
+#endif
+        /* JSON publish path — used for location always, other categories when CBOR disabled */
+        {
+            char *payload = build_payload_for_category(cat);
+            if (!payload) {
+                LOG_ERR("build_payload_for_category(%c) returned NULL", cat);
+                overall = -ENOMEM;
+                continue;
+            }
+            int ret = transport_publish_to(cat, payload, strlen(payload));
+            cJSON_free(payload);
+            if (ret != 0) {
+                LOG_WRN("Publish failed for category '%c' (%d)", cat, ret);
+                overall = ret;
+            }
         }
-
-        int ret = transport_publish_to(cat, payload, strlen(payload));
-        cJSON_free(payload);
-
-        if (ret != 0) {
-            LOG_WRN("Publish failed for category '%c' (%d)", cat, ret);
-            overall = ret;
-        }
-#endif /* CONFIG_CONEXIO_CLOUD_CBOR */
     }
 
     if (overall == 0) {
