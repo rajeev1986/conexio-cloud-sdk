@@ -46,17 +46,16 @@
 
 LOG_MODULE_REGISTER(mqtt_transport, LOG_LEVEL_DBG);
 
-/* AWS IoT Core port selection:
- *   8883 — standard MQTT over TLS (both fleet-cert auth and ingest key auth)
+/* AWS IoT Core port:
+ *   8883 — standard MQTT over TLS (both fleet-cert and ingest key modes)
  *
- * Port 8883 is used in all modes.  When an ingest key is configured the
- * device does not present a client certificate — AWS IoT Core triggers the
- * Custom Authorizer because the MQTT username contains the query parameter
- * "?x-amz-customauthorizer-name=<AuthorizerName>".  signingDisabled=true
- * on the authorizer means no HMAC signature is required in the token.
+ * Ingest key mode uses a dedicated IoT Core Domain Configuration
+ * (conexio-ingest) with authenticationType=CUSTOM_AUTH + applicationProtocol=
+ * SECURE_MQTT.  This endpoint invokes the Custom Authorizer Lambda on every
+ * CONNECT without needing port 443 or ALPN.
  *
- * Port 443 with ALPN "mqtt" was previously attempted but the nRF9151 modem
- * does not support the TLS_ALPN_LIST socket option (-109 ENOPROTOOPT).
+ * The nRF9151 modem does not support TLS_ALPN_LIST (-109 ENOPROTOOPT) so
+ * the previously attempted port-443+ALPN path is permanently ruled out.
  */
 #define BROKER_PORT   8883
 
@@ -504,8 +503,22 @@ static void mqtt_evt_handler(struct mqtt_client *c, const struct mqtt_evt *evt)
 int transport_init_with_config(const char *device_id,
                                const struct conexio_cloud_config_t *cfg)
 {
-    /* Store broker host so transport_connect() can resolve it later */
+    /* Store broker host so transport_connect() can resolve it later.
+     *
+     * In ingest key mode the device connects to the dedicated domain config
+     * endpoint (CONFIG_CONEXIO_CLOUD_INGEST_ENDPOINT) instead of the standard
+     * fleet endpoint — the two endpoints have different auth policies.
+     * The ingest endpoint has CUSTOM_AUTH so the Custom Authorizer Lambda
+     * fires on every CONNECT; the standard endpoint uses DEFAULT (mutual TLS).
+     */
+#if INGEST_KEY_MODE
+    strncpy(g_broker_host, CONFIG_CONEXIO_CLOUD_INGEST_ENDPOINT,
+            sizeof(g_broker_host) - 1);
+    LOG_INF("Ingest key mode: broker = %s", g_broker_host);
+#else
     strncpy(g_broker_host, cfg->mqtt_host, sizeof(g_broker_host) - 1);
+#endif
+    g_broker_host[sizeof(g_broker_host) - 1] = '\0';
 
     /* Build per-device MQTT topic strings with v1/ version prefix.
      * The prefix allows the cloud to route different schema versions
@@ -609,34 +622,36 @@ int transport_connect(void)
     client.transport.type   = MQTT_TRANSPORT_SECURE; /* TLS mandatory       */
 
 #if INGEST_KEY_MODE
-    /* Ingest key mode: pass the ingest key + authorizer name as MQTT username.
+    /* Ingest key mode — domain config endpoint (CUSTOM_AUTH + SECURE_MQTT).
      *
-     * AWS IoT Core Custom Authorizer on port 8883 is triggered when the MQTT
-     * username contains the query parameter:
-     *   ?x-amz-customauthorizer-name=<AuthorizerName>
+     * The device connects to CONFIG_CONEXIO_CLOUD_INGEST_ENDPOINT on port 8883.
+     * AWS IoT Core invokes the Custom Authorizer Lambda on every CONNECT.
      *
-     * With signingDisabled=true the value before '?' is the raw token that
-     * the authorizer Lambda receives as event.protocolData.mqtt.username.
-     * The custom authorizer Lambda strips the query string and uses the raw
-     * key to look up the workspace in DynamoDB.
+     * MQTT field mapping (mirrors how Spotflow does it):
+     *   client_id → IMEI  (device identity for policy scoping)
+     *   user_name → IMEI  (Lambda receives this in protocolData.mqtt.username)
+     *   password  → raw ingest key
+     *               (IoT Core base64-encodes it; Lambda decodes it)
      *
-     * Format: "<ingest-key>?x-amz-customauthorizer-name=<name>"
+     * No client certificate is presented — sec_tags contains CA only.
+     * No ALPN, no query params, no port change.
      */
-    static char ingest_key_username_buf[256];
-    static struct mqtt_utf8 ingest_key_username;
+    static struct mqtt_utf8 ingest_username;
+    static struct mqtt_utf8 ingest_password;
 
-    snprintf(ingest_key_username_buf, sizeof(ingest_key_username_buf),
-             "%s?x-amz-customauthorizer-name=%s",
-             CONFIG_CONEXIO_CLOUD_INGEST_KEY,
-             CONFIG_CONEXIO_CLOUD_INGEST_AUTHORIZER_NAME);
+    /* username = IMEI (same as client_id — Lambda uses it for identity) */
+    ingest_username.utf8 = (uint8_t *)dev_id;
+    ingest_username.size = strlen(dev_id);
 
-    ingest_key_username.utf8 = (uint8_t *)ingest_key_username_buf;
-    ingest_key_username.size = strlen(ingest_key_username_buf);
+    /* password = raw ingest key */
+    ingest_password.utf8 = (uint8_t *)CONFIG_CONEXIO_CLOUD_INGEST_KEY;
+    ingest_password.size = sizeof(CONFIG_CONEXIO_CLOUD_INGEST_KEY) - 1;
 
-    client.user_name = &ingest_key_username;
-    client.password  = NULL;
-    LOG_INF("Ingest key mode: authenticating via Custom Authorizer on port 8883");
-    LOG_DBG("MQTT username: %s", ingest_key_username_buf);
+    client.user_name = &ingest_username;
+    client.password  = &ingest_password;
+
+    LOG_INF("Ingest key mode: connecting to %s:%d (domain config, no ALPN)",
+            g_broker_host, BROKER_PORT);
 #else
     /* Fleet cert mode: mutual TLS — no username/password needed */
     client.password  = NULL;

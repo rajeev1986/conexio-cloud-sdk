@@ -47,7 +47,7 @@
  * when ingest key mode is active.
  */
 #if defined(CONFIG_CONEXIO_CLOUD_INGEST_KEY_ENABLED)
-#  warning "Ingest key mode active — device ID is the modem IMEI (port 443, Custom Authorizer)"
+#  warning "Ingest key mode active — device ID is the modem IMEI (port 8883, domain config, no ALPN)"
 #  if defined(CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID_ENABLED) && \
       CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID_ENABLED
 #    warning "CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID_ENABLED is set but has no effect in ingest key mode — IMEI is used automatically"

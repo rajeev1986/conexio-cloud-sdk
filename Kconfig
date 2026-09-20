@@ -318,14 +318,23 @@ config CONEXIO_CLOUD_MQTT_KEEPALIVE_SEC
 # Allows pre-registered devices to authenticate via MQTT using a workspace
 # ingest key instead of a device certificate.
 #
-# When enabled:
-#   - MQTT connects on port 443 with ALPN "mqtt" (no client certificate)
-#   - The ingest key is sent as the MQTT username field
-#   - AWS IoT Core Custom Authorizer validates the key and device ownership
-#   - Device IMEI must be pre-registered in the Conexio Console (All Devices)
-#   - CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID must be set to the 15-digit IMEI
+# How it works (Option C — IoT Core domain config, port 8883, no ALPN):
+#   The device connects to a dedicated IoT Core endpoint that has
+#   authenticationType=CUSTOM_AUTH + applicationProtocol=SECURE_MQTT.
+#   This endpoint invokes the Custom Authorizer Lambda on every CONNECT.
+#   MQTT fields:
+#     clientId  = IMEI  (device identity, same as always)
+#     username  = IMEI  (Lambda reads protocolData.mqtt.username)
+#     password  = raw ingest key (IoT Core base64-encodes before passing to Lambda)
+#   Port: 8883 (standard TLS — no ALPN needed, works on nRF9151 modem)
+#
+# The endpoint URL is retrieved after CDK deploy:
+#   aws iot describe-domain-configuration \
+#     --domain-configuration-name conexio-ingest[-staging|-dev] \
+#     --query domainName --output text
 #
 # Generate a key in the Conexio Console → Organization → Ingest Keys.
+# The device IMEI must be pre-registered in All Devices before connecting.
 #
 # Suitable for: development, testing, quick prototyping.
 # Production fleet: use fleet provisioning with TLS client certificates.
@@ -338,13 +347,10 @@ config CONEXIO_CLOUD_INGEST_KEY
 	default ""
 	depends on CONEXIO_CLOUD_MQTT
 	help
-	  When set, the SDK authenticates via AWS IoT Core Custom Authorizer
-	  instead of mutual TLS. The ingest key is passed as the MQTT username
-	  field with the authorizer name as a query parameter:
-	    <key>?x-amz-customauthorizer-name=ConexioIngestKeyAuthorizerProd
-
-	  MQTT connects on the standard port 8883 — no ALPN, no port change,
-	  no client certificate or fleet provisioning required.
+	  When set, the SDK authenticates via an AWS IoT Core domain configuration
+	  with CUSTOM_AUTH + SECURE_MQTT instead of mutual TLS client certificates.
+	  The ingest key is sent as the MQTT password field on port 8883.
+	  No ALPN, no port 443, no fleet provisioning required.
 
 	  The device ID is automatically read from the modem IMEI at boot.
 	  CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID is NOT needed and is ignored
@@ -367,21 +373,24 @@ config CONEXIO_CLOUD_INGEST_KEY_ENABLED
 	  non-empty. Used for #if defined() guards in C source — Kconfig string
 	  values cannot be tested directly in preprocessor expressions.
 
-config CONEXIO_CLOUD_INGEST_AUTHORIZER_NAME
-	string "AWS IoT Core Custom Authorizer name"
-	default "ConexioIngestKeyAuthorizerProd"
+config CONEXIO_CLOUD_INGEST_ENDPOINT
+	string "AWS IoT Core ingest domain config endpoint hostname"
+	default ""
 	depends on CONEXIO_CLOUD_INGEST_KEY_ENABLED
 	help
-	  The name of the AWS IoT Core Custom Authorizer to invoke.
-	  This is appended to the MQTT username as a query parameter:
-	    <ingest-key>?x-amz-customauthorizer-name=<AuthorizerName>
-	  AWS IoT Core on port 8883 uses this query param to select the
-	  Custom Authorizer Lambda when signingDisabled=true.
+	  The hostname of the AWS IoT Core domain configuration with
+	  authenticationType=CUSTOM_AUTH + applicationProtocol=SECURE_MQTT.
+	  This is NOT the standard mqtt.cloud.conexiotech.com endpoint —
+	  it is the dedicated ingest endpoint that invokes the Custom Authorizer.
 
-	  Prod (default):    ConexioIngestKeyAuthorizerProd
-	  Staging:           ConexioIngestKeyAuthorizerStaging
+	  Retrieve after CDK deploy with:
+	    aws iot describe-domain-configuration \
+	      --domain-configuration-name conexio-ingest \
+	      --query domainName --output text
 
-	  Only change this if targeting the staging environment for testing.
+	  Example: xxxxxxxxxxxxxxx-ats.iot.us-east-1.amazonaws.com
+
+	  For staging builds, use the conexio-ingest-staging domain config name.
 
 # ── TLS tags (internal — change only on conflict) ─────────────────────────────
 
