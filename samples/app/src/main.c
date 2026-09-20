@@ -46,7 +46,7 @@
  * CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID is NOT required and is ignored
  * when ingest key mode is active.
  */
-#if defined(CONFIG_CONEXIO_CLOUD_INGEST_KEY) && (sizeof(CONFIG_CONEXIO_CLOUD_INGEST_KEY) > 1)
+#if defined(CONFIG_CONEXIO_CLOUD_INGEST_KEY_ENABLED)
 #  warning "Ingest key mode active — device ID is the modem IMEI (port 443, Custom Authorizer)"
 #  if defined(CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID_ENABLED) && \
       CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID_ENABLED

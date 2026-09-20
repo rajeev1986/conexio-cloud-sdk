@@ -355,6 +355,15 @@ config CONEXIO_CLOUD_INGEST_KEY
 
 	  Leave empty (default) to use fleet-provisioned TLS certificate auth.
 
+config CONEXIO_CLOUD_INGEST_KEY_ENABLED
+	bool
+	default y if CONEXIO_CLOUD_INGEST_KEY != ""
+	depends on CONEXIO_CLOUD_MQTT
+	help
+	  Automatically set to y when CONFIG_CONEXIO_CLOUD_INGEST_KEY is
+	  non-empty. Used for #if defined() guards in C source — Kconfig string
+	  values cannot be tested directly in preprocessor expressions.
+
 # ── TLS tags (internal — change only on conflict) ─────────────────────────────
 
 config CONEXIO_CLOUD_CA_TAG

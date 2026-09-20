@@ -58,8 +58,7 @@ LOG_MODULE_REGISTER(mqtt_transport, LOG_LEVEL_DBG);
  * This avoids subscripting a string literal in a #if expression, which is
  * invalid in C preprocessor context.
  */
-#if defined(CONFIG_CONEXIO_CLOUD_INGEST_KEY) && \
-    (sizeof(CONFIG_CONEXIO_CLOUD_INGEST_KEY) > 1)
+#if defined(CONFIG_CONEXIO_CLOUD_INGEST_KEY_ENABLED)
 #  define BROKER_PORT       443
 #  define INGEST_KEY_MODE   1
 #else
