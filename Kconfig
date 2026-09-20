@@ -120,7 +120,7 @@ config CONEXIO_CLOUD_STATIC_DEVICE_ID_ENABLED
 	  Enable to use a hardcoded device ID instead of the modem IMEI.
 	  Useful for testing with a manually provisioned device identity.
 
-config CONEXIO_CLOUD_STATIC_DEVICE_ID
+INGEST_KEY CONEXIO_CLOUD_STATIC_DEVICE_ID
 	string "Static device ID"
 	default "stratus-pro-001"
 	depends on CONEXIO_CLOUD_STATIC_DEVICE_ID_ENABLED
@@ -312,6 +312,45 @@ config CONEXIO_CLOUD_MQTT_KEEPALIVE_SEC
 	default 120
 	range 30 600
 	depends on CONEXIO_CLOUD_MQTT
+
+# ── Ingest Key authentication (developer quick-connect) ──────────────────────
+# Alternative to fleet-provisioned TLS certificates.
+# Allows pre-registered devices to authenticate via MQTT using a workspace
+# ingest key instead of a device certificate.
+#
+# When enabled:
+#   - MQTT connects on port 443 with ALPN "mqtt" (no client certificate)
+#   - The ingest key is sent as the MQTT username field
+#   - AWS IoT Core Custom Authorizer validates the key and device ownership
+#   - Device IMEI must be pre-registered in the Conexio Console (All Devices)
+#   - CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID must be set to the 15-digit IMEI
+#
+# Generate a key in the Conexio Console → Organization → Ingest Keys.
+#
+# Suitable for: development, testing, quick prototyping.
+# Production fleet: use fleet provisioning with TLS client certificates.
+#
+# WARNING: Do not commit a real ingest key to version control.
+#          Use a build overlay file (e.g. prj_ingest_key.conf) excluded by .gitignore.
+
+config CONEXIO_CLOUD_INGEST_KEY
+	string "Workspace ingest key for developer quick-connect"
+	default ""
+	depends on CONEXIO_CLOUD_MQTT
+	help
+	  When set, the SDK authenticates via AWS IoT Core Custom Authorizer
+	  instead of mutual TLS. The ingest key is sent as the MQTT username.
+	  MQTT connects on port 443 with ALPN "mqtt" — no device certificate
+	  or fleet provisioning required.
+
+	  Obtain from: Conexio Console → Organization → Ingest Keys.
+	  Format: wks_<8chars>_<32chars>  e.g. wks_64c8a418_f3a9b2c1d4e5f6...
+
+	  Requires CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID to be set to the
+	  15-digit IMEI of the device. The IMEI must be pre-registered in
+	  the Conexio Console before the key will allow a connection.
+
+	  Leave empty (default) to use fleet-provisioned TLS certificate auth.
 
 # ── TLS tags (internal — change only on conflict) ─────────────────────────────
 

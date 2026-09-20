@@ -428,6 +428,26 @@ Uses `prj.conf` only. UART console enabled, log level INF. CBOR encoding enabled
 west build -b conexio_stratus_pro/nrf9151/ns
 ```
 
+### Ingest key quick-connect (no fleet provisioning)
+
+Connect a pre-registered device without running the provisioning firmware.
+Create a separate overlay file (never commit a real key to git):
+
+```kconfig
+# prj_ingest_key.conf — keep this file out of version control
+CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID_ENABLED=y
+CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID="355025934980275"   # ← device IMEI
+CONFIG_CONEXIO_CLOUD_INGEST_KEY="wks_64c8a418_..."        # ← key from Ingest Keys page
+```
+
+```bash
+west build -b conexio_stratus_pro/nrf9151/ns --pristine -- \
+  -DEXTRA_CONF_FILE=prj_ingest_key.conf
+```
+
+The device connects on port 443 (ALPN `mqtt`), no TLS client cert needed.
+The IMEI must be pre-registered in Conexio Console → All Devices.
+
 ### Debug
 
 Adds DBG-level logging and assertions.

@@ -46,19 +46,34 @@
 
 LOG_MODULE_REGISTER(mqtt_transport, LOG_LEVEL_DBG);
 
-/* AWS IoT Core uses port 8883 for MQTT over TLS (not 1883) */
-#define BROKER_PORT 8883
-
-/*
- * Security tags loaded by the modem when establishing the TLS session.
- * The order matters: CA first, then client cert, then private key.
- * These must match the tags written by cert_store.c and fleet-provisioning.
+/* AWS IoT Core port selection:
+ *   8883 — standard MQTT over mutual TLS (fleet-provisioned cert auth)
+ *   443  — MQTT via Custom Authorizer (ingest key auth, ALPN "mqtt")
+ *
+ * When CONFIG_CONEXIO_CLOUD_INGEST_KEY is set, port 443 is used and the
+ * device does not present a client certificate.
  */
+#if defined(CONFIG_CONEXIO_CLOUD_INGEST_KEY) && (CONFIG_CONEXIO_CLOUD_INGEST_KEY[0] != '\0')
+#  define BROKER_PORT       443
+#  define INGEST_KEY_MODE   1
+#else
+#  define BROKER_PORT       8883
+#  define INGEST_KEY_MODE   0
+#endif
+
+/* Security tags for mutual TLS (fleet cert mode).
+ * In ingest key mode only the CA tag is needed — no client cert. */
+#if INGEST_KEY_MODE
+static const sec_tag_t sec_tags[] = {
+    CONFIG_CONEXIO_CLOUD_CA_TAG,    /* 100 — AWS Root CA only */
+};
+#else
 static const sec_tag_t sec_tags[] = {
     CONFIG_CONEXIO_CLOUD_CA_TAG,    /* 100 — AWS Root CA         */
     CONFIG_CONEXIO_CLOUD_CERT_TAG,  /* 101 — Device certificate  */
     CONFIG_CONEXIO_CLOUD_KEY_TAG,   /* 102 — Device private key  */
 };
+#endif
 
 /* ── Module-level state ───────────────────────────────────────────────────*/
 
@@ -576,8 +591,6 @@ int transport_connect(void)
     client.evt_cb           = mqtt_evt_handler; /* All MQTT events handled here */
     client.client_id.utf8   = (uint8_t *)dev_id;
     client.client_id.size   = strlen(dev_id);
-    client.password         = NULL;             /* Auth is via client cert */
-    client.user_name        = NULL;
     client.protocol_version = MQTT_VERSION_3_1_1;
     client.keepalive        = CONFIG_CONEXIO_CLOUD_MQTT_KEEPALIVE_SEC; /* default 120 s */
     client.clean_session    = 0; /* Persistent session — broker queues QoS 1
@@ -590,6 +603,22 @@ int transport_connect(void)
     client.tx_buf_size      = sizeof(tx_buf);
     client.transport.type   = MQTT_TRANSPORT_SECURE; /* TLS mandatory       */
 
+#if INGEST_KEY_MODE
+    /* Ingest key mode: pass key as MQTT username, no client certificate.
+     * AWS IoT Core Custom Authorizer reads the username to validate the key. */
+    static const struct mqtt_utf8 ingest_key_username = {
+        .utf8 = (const uint8_t *)CONFIG_CONEXIO_CLOUD_INGEST_KEY,
+        .size = sizeof(CONFIG_CONEXIO_CLOUD_INGEST_KEY) - 1,
+    };
+    client.user_name = &ingest_key_username;
+    client.password  = NULL;
+    LOG_INF("Ingest key mode: authenticating with workspace key (port 443)");
+#else
+    /* Fleet cert mode: mutual TLS — no username/password needed */
+    client.password  = NULL;
+    client.user_name = NULL;
+#endif
+
     /* TLS configuration — references the modem security tags */
     struct mqtt_sec_config *tls = &client.transport.tls.config;
     tls->peer_verify    = TLS_PEER_VERIFY_REQUIRED; /* Verify broker cert   */
@@ -599,6 +628,17 @@ int transport_connect(void)
     tls->sec_tag_count  = ARRAY_SIZE(sec_tags);
     tls->hostname       = g_broker_host;            /* SNI hostname         */
     tls->session_cache  = TLS_SESSION_CACHE_DISABLED; /* Fresh TLS each time */
+
+#if INGEST_KEY_MODE
+    /* ALPN "mqtt" — required for AWS IoT Core Custom Authorizer on port 443.
+     * Without ALPN, port 443 is treated as HTTPS and the MQTT handshake fails. */
+    static const char *alpn_list[] = { "mqtt" };
+    tls->alpn_list      = alpn_list;
+    tls->alpn_list_len  = 1;
+#else
+    tls->alpn_list      = NULL;
+    tls->alpn_list_len  = 0;
+#endif
 
     /* NCS v3.2.1: mqtt_disconnect() does NOT reset transport.tls.sock to -1.
      * If this is a reconnect, the stale fd causes -EADDRINUSE on next connect. */

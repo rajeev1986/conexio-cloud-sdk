@@ -38,6 +38,23 @@
  */
 #include <conexio_cloud/conexio_cloud.h>
 
+/* ── Ingest key mode build-time checks ───────────────────────────────────────
+ * When CONFIG_CONEXIO_CLOUD_INGEST_KEY is set, the device authenticates via
+ * MQTT Custom Authorizer instead of TLS client cert. The MQTT ClientId must
+ * be a 15-digit IMEI matching a pre-registered device in the Conexio Console.
+ */
+#if defined(CONFIG_CONEXIO_CLOUD_INGEST_KEY) && (CONFIG_CONEXIO_CLOUD_INGEST_KEY[0] != '\0')
+#  if !defined(CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID_ENABLED) || \
+      !CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID_ENABLED
+#    error "CONFIG_CONEXIO_CLOUD_INGEST_KEY requires CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID_ENABLED=y"
+#  endif
+#  if !defined(CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID) || \
+      (sizeof(CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID) - 1 != 15)
+#    warning "CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID should be the 15-digit device IMEI"
+#  endif
+#  warning "Ingest key mode active — device authenticates via Custom Authorizer on port 443"
+#endif
+
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/sensor.h>
