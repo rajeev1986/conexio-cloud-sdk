@@ -375,22 +375,22 @@ config CONEXIO_CLOUD_INGEST_KEY_ENABLED
 
 config CONEXIO_CLOUD_INGEST_ENDPOINT
 	string "AWS IoT Core ingest domain config endpoint hostname"
-	default ""
+	default "ingest.mqtt.cloud.conexiotech.com"
 	depends on CONEXIO_CLOUD_INGEST_KEY_ENABLED
 	help
-	  The hostname of the AWS IoT Core domain configuration with
-	  authenticationType=CUSTOM_AUTH + applicationProtocol=SECURE_MQTT.
-	  This is NOT the standard mqtt.cloud.conexiotech.com endpoint —
-	  it is the dedicated ingest endpoint that invokes the Custom Authorizer.
+	  MQTT broker hostname for the Conexio ingest endpoint.
+	  When CONFIG_CONEXIO_CLOUD_INGEST_KEY is set, the SDK automatically
+	  connects to this endpoint instead of the standard fleet endpoint.
 
-	  Retrieve after CDK deploy with:
-	    aws iot describe-domain-configuration \
-	      --domain-configuration-name conexio-ingest \
-	      --query domainName --output text
+	  The default (ingest.mqtt.cloud.conexiotech.com) is correct for all
+	  production builds — no change needed.
 
-	  Example: xxxxxxxxxxxxxxx-ats.iot.us-east-1.amazonaws.com
+	  For staging builds override with the staging endpoint:
+	    CONFIG_CONEXIO_CLOUD_INGEST_ENDPOINT="d02002471t82kqdc2ri5t-ats.iot.us-east-1.amazonaws.com"
 
-	  For staging builds, use the conexio-ingest-staging domain config name.
+	  The endpoint uses authenticationType=CUSTOM_AUTH + SECURE_MQTT so the
+	  Custom Authorizer Lambda fires on every CONNECT at port 8883.
+	  No ALPN, no client certificate required.
 
 # ── TLS tags (internal — change only on conflict) ─────────────────────────────
 

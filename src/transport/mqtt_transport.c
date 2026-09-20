@@ -514,7 +514,8 @@ int transport_init_with_config(const char *device_id,
 #if INGEST_KEY_MODE
     strncpy(g_broker_host, CONFIG_CONEXIO_CLOUD_INGEST_ENDPOINT,
             sizeof(g_broker_host) - 1);
-    LOG_INF("Ingest key mode: broker = %s", g_broker_host);
+    LOG_INF("Ingest key mode: broker = %s (Custom Authorizer, port 8883)",
+            g_broker_host);
 #else
     strncpy(g_broker_host, cfg->mqtt_host, sizeof(g_broker_host) - 1);
 #endif
