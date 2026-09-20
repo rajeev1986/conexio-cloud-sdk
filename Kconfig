@@ -356,7 +356,7 @@ config CONEXIO_CLOUD_INGEST_KEY
 	  before the key will allow a connection.
 
 	  Obtain from: Conexio Console → Organization → Ingest Keys.
-	  Format: wks_<8chars>_<32chars>  e.g. wks_64c8a418_f3a9b2c1d4e5f6...
+	  Format: cnx_<8chars>_<32chars>  e.g. cnx_64c8a418_f3a9b2c1d4e5f6...
 
 	  Leave empty (default) to use fleet-provisioned TLS certificate auth.
 
