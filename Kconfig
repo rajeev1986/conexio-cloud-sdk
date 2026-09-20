@@ -120,7 +120,7 @@ config CONEXIO_CLOUD_STATIC_DEVICE_ID_ENABLED
 	  Enable to use a hardcoded device ID instead of the modem IMEI.
 	  Useful for testing with a manually provisioned device identity.
 
-INGEST_KEY CONEXIO_CLOUD_STATIC_DEVICE_ID
+config CONEXIO_CLOUD_STATIC_DEVICE_ID
 	string "Static device ID"
 	default "stratus-pro-001"
 	depends on CONEXIO_CLOUD_STATIC_DEVICE_ID_ENABLED
