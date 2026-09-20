@@ -47,22 +47,22 @@
 LOG_MODULE_REGISTER(mqtt_transport, LOG_LEVEL_DBG);
 
 /* AWS IoT Core port selection:
- *   8883 — standard MQTT over mutual TLS (fleet-provisioned cert auth)
- *   443  — MQTT via Custom Authorizer (ingest key auth, ALPN "mqtt")
+ *   8883 — standard MQTT over TLS (both fleet-cert auth and ingest key auth)
  *
- * When CONFIG_CONEXIO_CLOUD_INGEST_KEY is set to a non-empty string,
- * port 443 is used and the device does not present a client certificate.
+ * Port 8883 is used in all modes.  When an ingest key is configured the
+ * device does not present a client certificate — AWS IoT Core triggers the
+ * Custom Authorizer because the MQTT username contains the query parameter
+ * "?x-amz-customauthorizer-name=<AuthorizerName>".  signingDisabled=true
+ * on the authorizer means no HMAC signature is required in the token.
  *
- * sizeof(CONFIG_CONEXIO_CLOUD_INGEST_KEY) > 1 detects a non-empty string
- * at compile time (empty string "" has sizeof == 1, any real key has sizeof > 1).
- * This avoids subscripting a string literal in a #if expression, which is
- * invalid in C preprocessor context.
+ * Port 443 with ALPN "mqtt" was previously attempted but the nRF9151 modem
+ * does not support the TLS_ALPN_LIST socket option (-109 ENOPROTOOPT).
  */
+#define BROKER_PORT   8883
+
 #if defined(CONFIG_CONEXIO_CLOUD_INGEST_KEY_ENABLED)
-#  define BROKER_PORT       443
 #  define INGEST_KEY_MODE   1
 #else
-#  define BROKER_PORT       8883
 #  define INGEST_KEY_MODE   0
 #endif
 
@@ -609,15 +609,34 @@ int transport_connect(void)
     client.transport.type   = MQTT_TRANSPORT_SECURE; /* TLS mandatory       */
 
 #if INGEST_KEY_MODE
-    /* Ingest key mode: pass key as MQTT username, no client certificate.
-     * AWS IoT Core Custom Authorizer reads the username to validate the key. */
-    static struct mqtt_utf8 ingest_key_username = {
-        .utf8 = (uint8_t *)CONFIG_CONEXIO_CLOUD_INGEST_KEY,
-        .size = sizeof(CONFIG_CONEXIO_CLOUD_INGEST_KEY) - 1,
-    };
+    /* Ingest key mode: pass the ingest key + authorizer name as MQTT username.
+     *
+     * AWS IoT Core Custom Authorizer on port 8883 is triggered when the MQTT
+     * username contains the query parameter:
+     *   ?x-amz-customauthorizer-name=<AuthorizerName>
+     *
+     * With signingDisabled=true the value before '?' is the raw token that
+     * the authorizer Lambda receives as event.protocolData.mqtt.username.
+     * The custom authorizer Lambda strips the query string and uses the raw
+     * key to look up the workspace in DynamoDB.
+     *
+     * Format: "<ingest-key>?x-amz-customauthorizer-name=<name>"
+     */
+    static char ingest_key_username_buf[256];
+    static struct mqtt_utf8 ingest_key_username;
+
+    snprintf(ingest_key_username_buf, sizeof(ingest_key_username_buf),
+             "%s?x-amz-customauthorizer-name=%s",
+             CONFIG_CONEXIO_CLOUD_INGEST_KEY,
+             CONFIG_CONEXIO_CLOUD_INGEST_AUTHORIZER_NAME);
+
+    ingest_key_username.utf8 = (uint8_t *)ingest_key_username_buf;
+    ingest_key_username.size = strlen(ingest_key_username_buf);
+
     client.user_name = &ingest_key_username;
     client.password  = NULL;
-    LOG_INF("Ingest key mode: authenticating with workspace key (port 443)");
+    LOG_INF("Ingest key mode: authenticating via Custom Authorizer on port 8883");
+    LOG_DBG("MQTT username: %s", ingest_key_username_buf);
 #else
     /* Fleet cert mode: mutual TLS — no username/password needed */
     client.password  = NULL;
@@ -633,19 +652,6 @@ int transport_connect(void)
     tls->sec_tag_count  = ARRAY_SIZE(sec_tags);
     tls->hostname       = g_broker_host;            /* SNI hostname         */
     tls->session_cache  = TLS_SESSION_CACHE_DISABLED; /* Fresh TLS each time */
-
-#if INGEST_KEY_MODE
-    /* ALPN "mqtt" — required for AWS IoT Core Custom Authorizer on port 443.
-     * Without ALPN, port 443 is treated as HTTPS and the MQTT handshake fails.
-     * Requires CONFIG_MQTT_LIB_TLS_USE_ALPN=y in prj.conf. */
-#  if defined(CONFIG_MQTT_LIB_TLS_USE_ALPN)
-    static const char *alpn_list[] = { "mqtt" };
-    tls->alpn_protocol_name_list  = alpn_list;
-    tls->alpn_protocol_name_count = 1;
-#  else
-#    error "CONFIG_MQTT_LIB_TLS_USE_ALPN=y is required for ingest key mode (port 443)"
-#  endif
-#endif
 
     /* NCS v3.2.1: mqtt_disconnect() does NOT reset transport.tls.sock to -1.
      * If this is a reconnect, the stale fd causes -EADDRINUSE on next connect. */

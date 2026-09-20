@@ -339,9 +339,12 @@ config CONEXIO_CLOUD_INGEST_KEY
 	depends on CONEXIO_CLOUD_MQTT
 	help
 	  When set, the SDK authenticates via AWS IoT Core Custom Authorizer
-	  instead of mutual TLS. The ingest key is sent as the MQTT username.
-	  MQTT connects on port 443 with ALPN "mqtt" — no device certificate
-	  or fleet provisioning required.
+	  instead of mutual TLS. The ingest key is passed as the MQTT username
+	  field with the authorizer name as a query parameter:
+	    <key>?x-amz-customauthorizer-name=ConexioIngestKeyAuthorizerProd
+
+	  MQTT connects on the standard port 8883 — no ALPN, no port change,
+	  no client certificate or fleet provisioning required.
 
 	  The device ID is automatically read from the modem IMEI at boot.
 	  CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID is NOT needed and is ignored
@@ -363,6 +366,22 @@ config CONEXIO_CLOUD_INGEST_KEY_ENABLED
 	  Automatically set to y when CONFIG_CONEXIO_CLOUD_INGEST_KEY is
 	  non-empty. Used for #if defined() guards in C source — Kconfig string
 	  values cannot be tested directly in preprocessor expressions.
+
+config CONEXIO_CLOUD_INGEST_AUTHORIZER_NAME
+	string "AWS IoT Core Custom Authorizer name"
+	default "ConexioIngestKeyAuthorizerProd"
+	depends on CONEXIO_CLOUD_INGEST_KEY_ENABLED
+	help
+	  The name of the AWS IoT Core Custom Authorizer to invoke.
+	  This is appended to the MQTT username as a query parameter:
+	    <ingest-key>?x-amz-customauthorizer-name=<AuthorizerName>
+	  AWS IoT Core on port 8883 uses this query param to select the
+	  Custom Authorizer Lambda when signingDisabled=true.
+
+	  Prod (default):    ConexioIngestKeyAuthorizerProd
+	  Staging:           ConexioIngestKeyAuthorizerStaging
+
+	  Only change this if targeting the staging environment for testing.
 
 # ── TLS tags (internal — change only on conflict) ─────────────────────────────
 
