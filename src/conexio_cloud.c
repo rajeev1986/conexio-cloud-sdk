@@ -3020,7 +3020,11 @@ int conexio_cloud_init(conexio_cloud_event_cb_t cb)
      *
      * The provisioning sample (conexio-stratus-provision/src/main.c) uses
      * this same function before LTE connects — this is the correct approach. */
-#if defined(CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID_ENABLED)
+#if defined(CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID_ENABLED) && \
+    !(defined(CONFIG_CONEXIO_CLOUD_INGEST_KEY) && (CONFIG_CONEXIO_CLOUD_INGEST_KEY[0] != '\0'))
+    /* Static device ID override — used only when NOT in ingest key mode.
+     * In ingest key mode the device ID is always the real modem IMEI so
+     * the Custom Authorizer can verify it against the device registry. */
     strncpy(g_device_id, CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID,
             sizeof(g_device_id) - 1);
     g_device_id[sizeof(g_device_id) - 1] = '\0';

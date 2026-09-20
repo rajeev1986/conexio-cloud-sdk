@@ -40,19 +40,18 @@
 
 /* ── Ingest key mode build-time checks ───────────────────────────────────────
  * When CONFIG_CONEXIO_CLOUD_INGEST_KEY is set, the device authenticates via
- * MQTT Custom Authorizer instead of TLS client cert. The MQTT ClientId must
- * be a 15-digit IMEI matching a pre-registered device in the Conexio Console.
+ * MQTT Custom Authorizer instead of TLS client cert.
+ *
+ * The device ID is automatically read from the modem IMEI at boot —
+ * CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID is NOT required and is ignored
+ * when ingest key mode is active.
  */
 #if defined(CONFIG_CONEXIO_CLOUD_INGEST_KEY) && (CONFIG_CONEXIO_CLOUD_INGEST_KEY[0] != '\0')
-#  if !defined(CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID_ENABLED) || \
-      !CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID_ENABLED
-#    error "CONFIG_CONEXIO_CLOUD_INGEST_KEY requires CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID_ENABLED=y"
+#  warning "Ingest key mode active — device ID is the modem IMEI (port 443, Custom Authorizer)"
+#  if defined(CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID_ENABLED) && \
+      CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID_ENABLED
+#    warning "CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID_ENABLED is set but has no effect in ingest key mode — IMEI is used automatically"
 #  endif
-#  if !defined(CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID) || \
-      (sizeof(CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID) - 1 != 15)
-#    warning "CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID should be the 15-digit device IMEI"
-#  endif
-#  warning "Ingest key mode active — device authenticates via Custom Authorizer on port 443"
 #endif
 
 #include <zephyr/kernel.h>

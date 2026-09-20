@@ -343,12 +343,15 @@ config CONEXIO_CLOUD_INGEST_KEY
 	  MQTT connects on port 443 with ALPN "mqtt" — no device certificate
 	  or fleet provisioning required.
 
+	  The device ID is automatically read from the modem IMEI at boot.
+	  CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID is NOT needed and is ignored
+	  when this option is set.
+
+	  The IMEI must be pre-registered in Conexio Console → All Devices
+	  before the key will allow a connection.
+
 	  Obtain from: Conexio Console → Organization → Ingest Keys.
 	  Format: wks_<8chars>_<32chars>  e.g. wks_64c8a418_f3a9b2c1d4e5f6...
-
-	  Requires CONFIG_CONEXIO_CLOUD_STATIC_DEVICE_ID to be set to the
-	  15-digit IMEI of the device. The IMEI must be pre-registered in
-	  the Conexio Console before the key will allow a connection.
 
 	  Leave empty (default) to use fleet-provisioned TLS certificate auth.
 
