@@ -50,10 +50,16 @@ LOG_MODULE_REGISTER(mqtt_transport, LOG_LEVEL_DBG);
  *   8883 — standard MQTT over mutual TLS (fleet-provisioned cert auth)
  *   443  — MQTT via Custom Authorizer (ingest key auth, ALPN "mqtt")
  *
- * When CONFIG_CONEXIO_CLOUD_INGEST_KEY is set, port 443 is used and the
- * device does not present a client certificate.
+ * When CONFIG_CONEXIO_CLOUD_INGEST_KEY is set to a non-empty string,
+ * port 443 is used and the device does not present a client certificate.
+ *
+ * sizeof(CONFIG_CONEXIO_CLOUD_INGEST_KEY) > 1 detects a non-empty string
+ * at compile time (empty string "" has sizeof == 1, any real key has sizeof > 1).
+ * This avoids subscripting a string literal in a #if expression, which is
+ * invalid in C preprocessor context.
  */
-#if defined(CONFIG_CONEXIO_CLOUD_INGEST_KEY) && (CONFIG_CONEXIO_CLOUD_INGEST_KEY[0] != '\0')
+#if defined(CONFIG_CONEXIO_CLOUD_INGEST_KEY) && \
+    (sizeof(CONFIG_CONEXIO_CLOUD_INGEST_KEY) > 1)
 #  define BROKER_PORT       443
 #  define INGEST_KEY_MODE   1
 #else
@@ -631,13 +637,15 @@ int transport_connect(void)
 
 #if INGEST_KEY_MODE
     /* ALPN "mqtt" — required for AWS IoT Core Custom Authorizer on port 443.
-     * Without ALPN, port 443 is treated as HTTPS and the MQTT handshake fails. */
+     * Without ALPN, port 443 is treated as HTTPS and the MQTT handshake fails.
+     * Requires CONFIG_MQTT_LIB_TLS_USE_ALPN=y in prj.conf. */
+#  if defined(CONFIG_MQTT_LIB_TLS_USE_ALPN)
     static const char *alpn_list[] = { "mqtt" };
-    tls->alpn_list      = alpn_list;
-    tls->alpn_list_len  = 1;
-#else
-    tls->alpn_list      = NULL;
-    tls->alpn_list_len  = 0;
+    tls->alpn_protocol_name_list  = alpn_list;
+    tls->alpn_protocol_name_count = 1;
+#  else
+#    error "CONFIG_MQTT_LIB_TLS_USE_ALPN=y is required for ingest key mode (port 443)"
+#  endif
 #endif
 
     /* NCS v3.2.1: mqtt_disconnect() does NOT reset transport.tls.sock to -1.
