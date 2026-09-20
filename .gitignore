@@ -10,3 +10,15 @@ samples/*/build/
 
 # macOS
 .DS_Store
+
+# Ingest key overlays — prj_ingest_key.conf is committed as a safe template
+# with placeholder values. Per-developer copies with real keys must NOT be
+# committed. Name your real-key file with a _dev, _local, or similar suffix:
+#   prj_ingest_key_dev.conf
+#   prj_ingest_key_local.conf
+#   prj_ingest_key_rajeev.conf
+*_ingest_key_dev.conf
+*_ingest_key_local.conf
+*_ingest_key_*.conf
+# Allow the template itself
+!prj_ingest_key.conf
