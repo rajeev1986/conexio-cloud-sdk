@@ -47,7 +47,7 @@
 #include "../transport.h"
 #include "../config_fetch.h"
 
-LOG_MODULE_REGISTER(http_transport, LOG_LEVEL_DBG);
+LOG_MODULE_REGISTER(http_transport, LOG_LEVEL_INF);
 
 /* API Gateway always listens on port 443 (HTTPS) */
 #define API_PORT   443

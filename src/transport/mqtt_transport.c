@@ -44,7 +44,7 @@
 #include "../transport.h"
 #include "../config_fetch.h"
 
-LOG_MODULE_REGISTER(mqtt_transport, LOG_LEVEL_DBG);
+LOG_MODULE_REGISTER(mqtt_transport, LOG_LEVEL_INF);
 
 /* AWS IoT Core port:
  *   8883 — standard MQTT over TLS (both fleet-cert and ingest key modes)
