@@ -261,7 +261,6 @@ static void battery_metrics_init(void)
     }
 #endif
 }
-}
 
 /* ── battery_read_soc ────────────────────────────────────────────────────
  * Read battery state-of-charge % using the nRF Fuel Gauge library.
