@@ -103,7 +103,13 @@ static int read_sensors(const struct device *charger,
 
     ret = sensor_channel_get(charger, SENSOR_CHAN_GAUGE_TEMP, &value);
     if (ret < 0) {
-        LOG_DBG("GAUGE_TEMP unavailable (%d) — using 25 °C default", ret);
+        /* NTC thermistor not connected (common on Stratus Pro). The LP963450
+         * battery model is characterised at a single temperature only
+         * (LP963450_25C.inc: .temps = {25.0}), so the library clamps to 25°C
+         * regardless of the value passed — no other temperature coefficients
+         * exist in this model. Using modem die temperature (AT%%XTEMP, typically
+         * 40–70°C under load) would be wrong: it is not the battery cell temp.
+         * 25°C is the correct fixed value for this single-point model. */
         value.val1 = 25; value.val2 = 0;
     }
     *temp = (float)value.val1 + (float)value.val2 / 1000000.0f;
