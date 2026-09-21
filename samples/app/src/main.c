@@ -347,6 +347,11 @@ int main(void)
             LOG_ERR("LED GPIO configure failed (%d)", ret);
         } else {
             LOG_INF("LED GPIO ready (pin %d)", g_led.pin);
+            /* Boot indicator — blink LED on for 2 s then off so the user
+             * can confirm the board has started without a serial cable. */
+            gpio_pin_set_dt(&g_led, 1);
+            k_sleep(K_SECONDS(2));
+            gpio_pin_set_dt(&g_led, 0);
         }
     }
 
