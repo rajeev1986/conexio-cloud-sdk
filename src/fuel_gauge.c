@@ -10,16 +10,32 @@
  * The model data is embedded from LP963450_25C.inc — same file previously
  * carried in the sample application.
  *
- * Integration with conexio_cloud.c:
- *   conexio_fuel_gauge_init()   — called inside battery_metrics_init()
- *                                  (under CONFIG_CONEXIO_CLOUD_BATTERY_METRICS)
- *   conexio_fuel_gauge_update() — called at the top of conexio_cloud_publish()
- *                                  to refresh VBUS state before battery_read_soc()
- *   conexio_fuel_gauge_read_mv()— called by the SDK's auto-registered
- *                                  _batt_mv sensor callback when
- *                                  CONFIG_CONEXIO_CLOUD_BATTERY_METRICS is off
+ * ── Sampling strategy ─────────────────────────────────────────────────────
  *
- * Devices WITHOUT the nPM13xx PMIC (CONFIG_NRF_FUEL_GAUGE=n):
+ * Nordic recommends sampling the nPM13xx at different rates depending on
+ * modem activity, because the nRF Fuel Gauge is a Coulomb-counting algorithm:
+ * the `delta` parameter to nrf_fuel_gauge_process() must accurately reflect
+ * elapsed time between calls for the SOC estimate to stay accurate.
+ *
+ *   Modem active / transmitting:  1 Hz (CONFIG_CONEXIO_FUEL_GAUGE_ACTIVE_RATE_MS)
+ *   Modem in PSM sleep:           30 s (CONFIG_CONEXIO_FUEL_GAUGE_PSM_RATE_MS)
+ *
+ * A dedicated background thread (fg_thread) runs this loop continuously,
+ * independent of the telemetry publish interval. The cached SOC and voltage
+ * values are read atomically by conexio_cloud_publish() without an extra
+ * sensor_sample_fetch().
+ *
+ * Thread stack size is controlled by CONFIG_CONEXIO_FUEL_GAUGE_STACK_SIZE.
+ *
+ * Integration with conexio_cloud.c:
+ *   conexio_fuel_gauge_init()       — called inside battery_metrics_init()
+ *                                     (under CONFIG_CONEXIO_CLOUD_BATTERY_METRICS)
+ *                                     spawns the sampling thread
+ *   conexio_fuel_gauge_update()     — called at the top of conexio_cloud_publish()
+ *                                     returns the latest cached SOC/voltage
+ *   conexio_fuel_gauge_read_mv()    — returns cached battery voltage in mV
+ *
+ * Devices WITHOUT nPM13xx (CONFIG_NRF_FUEL_GAUGE=n):
  *   This file is not compiled. The SDK falls back to CONFIG_CONEXIO_CLOUD_AUTO_BATTERY
  *   (modem AT%%XVBAT) or the application registers its own _batt_mv sensor callback.
  */
@@ -37,6 +53,7 @@
 #include <nrf_fuel_gauge.h>
 
 #include "fuel_gauge.h"
+#include "power_mgr.h"
 
 LOG_MODULE_REGISTER(fuel_gauge, LOG_LEVEL_DBG);
 
@@ -58,6 +75,21 @@ static const struct battery_model battery_model = {
 /* ── Module state ─────────────────────────────────────────────────────── */
 static bool    g_ready    = false;
 static int64_t g_ref_time = 0;
+
+/* Cached values written by the sampling thread, read by publish path.
+ * Protected by a spinlock so reads are always atomic across cores. */
+static struct k_spinlock g_cache_lock;
+static float  g_cached_soc_pct  = -1.0f;  /* -1 = not yet sampled */
+static double g_cached_mv       = NAN;
+static bool   g_cached_charging = false;
+
+/* Saved device pointer so the thread can use it after init */
+static const struct device *g_charger_dev;
+
+/* Background sampling thread */
+static K_THREAD_STACK_DEFINE(fg_stack,
+                              CONFIG_CONEXIO_FUEL_GAUGE_STACK_SIZE);
+static struct k_thread fg_thread_data;
 
 /* ── Internal helpers ─────────────────────────────────────────────────── */
 
@@ -122,6 +154,91 @@ static int charge_status_inform(int32_t chg_status)
 
     return nrf_fuel_gauge_ext_state_update(
         NRF_FUEL_GAUGE_EXT_STATE_INFO_CHARGE_STATE_CHANGE, &state_info);
+}
+
+/* ── Sampling thread ──────────────────────────────────────────────────────
+ *
+ * Runs continuously after fuel gauge init.
+ * Samples at 1 Hz (active) or every CONFIG_CONEXIO_FUEL_GAUGE_PSM_RATE_MS
+ * (PSM sleep) so the Coulomb counter stays accurate.
+ *
+ * Adaptive rate:
+ *   - Modem in PSM sleep (g_psm_sleeping == true): long interval — no point
+ *     sampling at 1 Hz when the modem draws only microamps in sleep; the
+ *     current is so small that the SOC barely changes.
+ *   - Modem active: sample at CONFIG_CONEXIO_FUEL_GAUGE_ACTIVE_RATE_MS (default 1000ms)
+ *     per Nordic's recommendation for accurate Coulomb counting.
+ */
+static void fg_thread_fn(void *a, void *b, void *c)
+{
+    ARG_UNUSED(a); ARG_UNUSED(b); ARG_UNUSED(c);
+
+    static int32_t chg_status_prev = -1;
+
+    while (1) {
+        /* ── Choose sample interval based on modem state ─────────────── */
+#if defined(CONFIG_CONEXIO_CLOUD_PSM)
+        /* When PSM is active and the modem is in sleep (not actively
+         * transmitting), use the longer interval to save power.
+         * power_mgr_is_psm_active() returns true if the network granted PSM.
+         * We use that as the proxy for "modem may be in sleep" — the modem
+         * manages its own sleep/wake cycle via TAU and active timers.     */
+        bool in_psm = power_mgr_is_psm_active();
+        k_sleep(in_psm
+                ? K_MSEC(CONFIG_CONEXIO_FUEL_GAUGE_PSM_RATE_MS)
+                : K_MSEC(CONFIG_CONEXIO_FUEL_GAUGE_ACTIVE_RATE_MS));
+#else
+        k_sleep(K_MSEC(CONFIG_CONEXIO_FUEL_GAUGE_ACTIVE_RATE_MS));
+#endif
+
+        if (!g_ready || !g_charger_dev) {
+            continue;
+        }
+
+        /* ── Sample the nPM13xx ───────────────────────────────────────── */
+        float voltage, current, temp;
+        int32_t chg_status;
+
+        if (read_sensors(g_charger_dev,
+                         &voltage, &current, &temp, &chg_status) < 0) {
+            continue;
+        }
+
+        /* Detect charging from current sign (before negation) */
+        bool is_charging = (current < 0.0f); /* Fuel gauge sign: positive=charging */
+
+        /* Update VBUS / charge state when changed */
+        nrf_fuel_gauge_ext_state_update(
+            is_charging ? NRF_FUEL_GAUGE_EXT_STATE_INFO_VBUS_CONNECTED
+                        : NRF_FUEL_GAUGE_EXT_STATE_INFO_VBUS_DISCONNECTED,
+            NULL);
+
+        if (chg_status != chg_status_prev) {
+            chg_status_prev = chg_status;
+            charge_status_inform(chg_status);
+        }
+
+        /* ── Advance the Coulomb-counting algorithm ───────────────────── */
+        float delta = (float)k_uptime_delta(&g_ref_time) / 1000.0f;
+        float soc   = nrf_fuel_gauge_process(voltage, current, temp,
+                                              delta, NULL);
+
+        LOG_DBG("FG sample: V=%.3fV I=%.3fA T=%.1f°C SoC=%.1f%% "
+                "TTE=%.0fs TTF=%.0fs",
+                (double)voltage,
+                (double)(-current),
+                (double)temp,
+                (double)soc,
+                (double)nrf_fuel_gauge_tte_get(),
+                (double)nrf_fuel_gauge_ttf_get());
+
+        /* ── Update cache atomically ──────────────────────────────────── */
+        k_spinlock_key_t key = k_spin_lock(&g_cache_lock);
+        g_cached_soc_pct  = soc;
+        g_cached_mv       = (double)voltage * 1000.0;
+        g_cached_charging = is_charging;
+        k_spin_unlock(&g_cache_lock, key);
+    }
 }
 
 /* ── Public API ───────────────────────────────────────────────────────── */
@@ -191,65 +308,38 @@ int conexio_fuel_gauge_init(const struct device *charger)
         LOG_WRN("charge_status_inform failed (%d) — continuing", ret);
     }
 
-    g_ref_time = k_uptime_get();
-    g_ready    = true;
+    g_ref_time    = k_uptime_get();
+    g_charger_dev = charger;
+    g_ready       = true;
 
-    LOG_INF("nPM13xx fuel gauge initialised (V0=%.3f V, I0=%.3f A, T0=%.1f °C)",
-            (double)parameters.v0,
-            (double)(-parameters.i0), /* display as positive discharge current */
-            (double)parameters.t0);
+    /* Seed the cache with the initial reading */
+    k_spinlock_key_t key = k_spin_lock(&g_cache_lock);
+    g_cached_soc_pct = 0.0f;   /* will be updated on first thread cycle */
+    g_cached_mv      = (double)parameters.v0 * 1000.0;
+    k_spin_unlock(&g_cache_lock, key);
+
+    /* Spawn the continuous sampling thread */
+    k_thread_create(&fg_thread_data, fg_stack,
+                    K_THREAD_STACK_SIZEOF(fg_stack),
+                    fg_thread_fn, NULL, NULL, NULL,
+                    K_LOWEST_APPLICATION_THREAD_PRIO, 0, K_NO_WAIT);
+    k_thread_name_set(&fg_thread_data, "fuel_gauge");
+
+    LOG_INF("nPM13xx fuel gauge ready — sampling at %d ms (active) / %d ms (PSM)",
+            CONFIG_CONEXIO_FUEL_GAUGE_ACTIVE_RATE_MS,
+            CONFIG_CONEXIO_FUEL_GAUGE_PSM_RATE_MS);
 
     return 0;
 }
 
 int conexio_fuel_gauge_update(const struct device *charger, bool vbus_connected)
 {
-    if (!g_ready || !charger) {
-        return -ENODEV;
-    }
-
-    static int32_t chg_status_prev = -1;
-    float voltage, current, temp;
-    int32_t chg_status;
-    int ret;
-
-    ret = read_sensors(charger, &voltage, &current, &temp, &chg_status);
-    if (ret < 0) {
-        LOG_WRN("fuel_gauge_update: sensor read failed (%d)", ret);
-        return ret;
-    }
-
-    /* Inform of VBUS state change */
-    nrf_fuel_gauge_ext_state_update(
-        vbus_connected ? NRF_FUEL_GAUGE_EXT_STATE_INFO_VBUS_CONNECTED
-                       : NRF_FUEL_GAUGE_EXT_STATE_INFO_VBUS_DISCONNECTED,
-        NULL);
-
-    /* Inform of charge status change (only when it actually changes) */
-    if (chg_status != chg_status_prev) {
-        chg_status_prev = chg_status;
-        ret = charge_status_inform(chg_status);
-        if (ret < 0) {
-            LOG_WRN("charge_status_inform failed (%d)", ret);
-        }
-    }
-
-    /* Advance the Coulomb-counting algorithm */
-    float delta = (float)k_uptime_delta(&g_ref_time) / 1000.0f;
-
-    float soc = nrf_fuel_gauge_process(voltage, current, temp, delta, NULL);
-    float tte = nrf_fuel_gauge_tte_get();
-    float ttf = nrf_fuel_gauge_ttf_get();
-
-    LOG_DBG("V: %.3fV  I: %.3fA  T: %.1f°C  SoC: %.1f%%  TTE: %.0fs  TTF: %.0fs",
-            (double)voltage,
-            (double)(-current), /* display as positive discharge */
-            (double)temp,
-            (double)soc,
-            (double)tte,
-            (double)ttf);
-
-    return 0;
+    /* No-op: the sampling thread handles continuous updates.
+     * This function is kept for API compatibility — connexio_cloud_publish()
+     * calls it, but the actual work is already done by fg_thread. */
+    ARG_UNUSED(charger);
+    ARG_UNUSED(vbus_connected);
+    return g_ready ? 0 : -ENODEV;
 }
 
 double conexio_fuel_gauge_read_mv(void)
@@ -258,32 +348,34 @@ double conexio_fuel_gauge_read_mv(void)
         return (double)NAN;
     }
 
-    /* Use the device handle resolved at init time via conexio_cloud.c */
-    extern const struct device *g_pmic_charger_dev;
-    const struct device *charger = g_pmic_charger_dev;
+    k_spinlock_key_t key = k_spin_lock(&g_cache_lock);
+    double mv = g_cached_mv;
+    k_spin_unlock(&g_cache_lock, key);
 
-    if (!charger) {
-        return (double)NAN;
-    }
-
-    struct sensor_value voltage;
-    int ret = sensor_sample_fetch(charger);
-    if (ret < 0) {
-        LOG_WRN("sensor_sample_fetch failed (%d)", ret);
-        return (double)NAN;
-    }
-
-    ret = sensor_channel_get(charger, SENSOR_CHAN_GAUGE_VOLTAGE, &voltage);
-    if (ret < 0) {
-        LOG_WRN("GAUGE_VOLTAGE get failed (%d)", ret);
-        return (double)NAN;
-    }
-
-    double mv = ((double)voltage.val1 * 1000.0) +
-                ((double)voltage.val2 / 1000.0);
-
-    LOG_DBG("battery: %.3f V (%d mV)", mv / 1000.0, (int)mv);
     return mv;
+}
+
+float conexio_fuel_gauge_read_soc(void)
+{
+    if (!g_ready) {
+        return -1.0f;
+    }
+
+    k_spinlock_key_t key = k_spin_lock(&g_cache_lock);
+    float soc = g_cached_soc_pct;
+    bool  chg = g_cached_charging;
+    k_spin_unlock(&g_cache_lock, key);
+
+    ARG_UNUSED(chg);
+    return soc;
+}
+
+bool conexio_fuel_gauge_is_charging(void)
+{
+    k_spinlock_key_t key = k_spin_lock(&g_cache_lock);
+    bool chg = g_cached_charging;
+    k_spin_unlock(&g_cache_lock, key);
+    return chg;
 }
 
 bool conexio_fuel_gauge_is_ready(void)

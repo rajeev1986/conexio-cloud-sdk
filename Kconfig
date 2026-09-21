@@ -257,6 +257,47 @@ config CONEXIO_CLOUD_BATTERY_METRICS
 	  Requires a 'pmic_charger' node in the devicetree (Conexio Stratus Pro default).
 	  Set CONFIG_CONEXIO_CLOUD_AUTO_BATTERY=n to avoid double-reporting voltage.
 
+config CONEXIO_FUEL_GAUGE_ACTIVE_RATE_MS
+	int "nPM13xx fuel gauge sampling interval — modem active (ms)"
+	default 1000
+	range 100 10000
+	depends on CONEXIO_CLOUD_BATTERY_METRICS
+	help
+	  How often the fuel gauge sampling thread calls nrf_fuel_gauge_process()
+	  when the modem is active (LTE connected / transmitting).
+
+	  Nordic recommends 1 Hz (1000 ms) for accurate Coulomb counting during
+	  active LTE operation. Reducing below 500 ms gives marginal accuracy
+	  improvement at the cost of higher CPU wake rate.
+
+	  Valid range: 100–10000 ms. Default: 1000 ms (1 Hz).
+
+config CONEXIO_FUEL_GAUGE_PSM_RATE_MS
+	int "nPM13xx fuel gauge sampling interval — PSM sleep (ms)"
+	default 30000
+	range 5000 300000
+	depends on CONEXIO_CLOUD_BATTERY_METRICS && CONEXIO_CLOUD_PSM
+	help
+	  How often the fuel gauge sampling thread calls nrf_fuel_gauge_process()
+	  when CONFIG_CONEXIO_CLOUD_PSM=y is active.
+
+	  During PSM sleep the modem draws only ~2–3 µA so battery drain is
+	  negligible between samples. Sampling less frequently saves CPU wake-ups
+	  without meaningfully reducing SOC accuracy.
+
+	  Valid range: 5000–300000 ms. Default: 30000 ms (30 s).
+
+config CONEXIO_FUEL_GAUGE_STACK_SIZE
+	int "nPM13xx fuel gauge sampling thread stack size (bytes)"
+	default 1024
+	range 512 4096
+	depends on CONEXIO_CLOUD_BATTERY_METRICS
+	help
+	  Stack size for the fuel gauge background sampling thread.
+	  The thread calls sensor_sample_fetch(), nrf_fuel_gauge_process(),
+	  and nrf_fuel_gauge_ext_state_update() — 1024 bytes is sufficient
+	  for all these. Increase only if custom logging or tracing overflows.
+
 config CONEXIO_CLOUD_MODEM_INFO_REFRESH
 	int "Modem info refresh interval (publishes)"
 	default 5

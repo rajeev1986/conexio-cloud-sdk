@@ -61,4 +61,15 @@ double conexio_fuel_gauge_read_mv(void);
  */
 bool conexio_fuel_gauge_is_ready(void);
 
+/**
+ * @brief Returns the latest cached state-of-charge from the sampling thread.
+ * @return SOC in percent (0.0–100.0), or -1.0 if not yet sampled.
+ */
+float conexio_fuel_gauge_read_soc(void);
+
+/**
+ * @brief Returns true if the battery is currently charging (VBUS connected).
+ */
+bool conexio_fuel_gauge_is_charging(void);
+
 #endif /* CONEXIO_FUEL_GAUGE_H__ */

@@ -263,22 +263,32 @@ static void battery_metrics_init(void)
 }
 
 /* ── battery_read_soc ────────────────────────────────────────────────────
- * Read battery state-of-charge % using the nRF Fuel Gauge library.
+ * Returns battery state-of-charge % from the nRF Fuel Gauge.
  *
- * The nPM1300 hardware does NOT compute SOC internally. SOC comes from
- * nrf_fuel_gauge_process() — a Coulomb-counting algorithm that must be
- * called with fresh V/I/T readings on every sample. We cannot simply
- * read SENSOR_CHAN_GAUGE_STATE_OF_CHARGE from the driver.
+ * When CONFIG_NRF_FUEL_GAUGE=y: reads from the cache maintained by the
+ * fuel gauge sampling thread (fg_thread in fuel_gauge.c). The thread runs
+ * at 1 Hz (active) or every CONFIG_CONEXIO_FUEL_GAUGE_PSM_RATE_MS (PSM)
+ * so the value is always fresh — no sensor_sample_fetch needed here.
  *
- * The fuel gauge must have been initialised by conexio_fuel_gauge_init()
- * which is called automatically inside battery_metrics_init() when
- * CONFIG_NRF_FUEL_GAUGE=y. No application code needed.
+ * Without CONFIG_NRF_FUEL_GAUGE: direct sensor read path (legacy).
  *
- * Also returns charging state via *is_charging (true = plugged in).
  * Returns SOC 0.0–100.0 on success, -1.0 on any read error.
  */
 static float battery_read_soc(bool *is_charging)
 {
+#if defined(CONFIG_NRF_FUEL_GAUGE)
+    /* Use cached values from the continuous sampling thread */
+    if (!conexio_fuel_gauge_is_ready()) return -1.0f;
+
+    float soc = conexio_fuel_gauge_read_soc();
+    if (is_charging) {
+        *is_charging = conexio_fuel_gauge_is_charging();
+    }
+    /* Update the publish-path voltage cache from the same thread values */
+    g_last_battery_mv = conexio_fuel_gauge_read_mv();
+    return soc;
+
+#else
     if (!g_pmic_charger_dev) return -1.0f;
 
     /* Single sensor_sample_fetch per cycle — reads all channels atomically */
@@ -290,10 +300,6 @@ static float battery_read_soc(bool *is_charging)
                            SENSOR_CHAN_GAUGE_VOLTAGE, &v_val) < 0) return -1.0f;
     if (sensor_channel_get(g_pmic_charger_dev,
                            SENSOR_CHAN_GAUGE_TEMP, &t_val) < 0) {
-        /* NTC not connected (thermistor-ohms = 0 in DTS) — driver returns
-         * -ENOTSUP for GAUGE_TEMP. Use 25°C as a safe default for the
-         * fuel gauge algorithm. SOC accuracy is slightly reduced but the
-         * algorithm remains stable. */
         t_val.val1 = 25;
         t_val.val2 = 0;
     }
@@ -302,28 +308,20 @@ static float battery_read_soc(bool *is_charging)
 
     float voltage = (float)v_val.val1 + (float)v_val.val2 / 1000000.0f;
     float temp    = (float)t_val.val1 + (float)t_val.val2 / 1000000.0f;
-    /* Zephyr: negative current = discharging.
-     * nRF Fuel Gauge expects the opposite sign convention: negate here. */
     float current = -((float)i_val.val1 + (float)i_val.val2 / 1000000.0f);
 
-    /* Cache voltage in mV so read_battery_mv() can use it without a
-     * second sensor_sample_fetch() on the same publish cycle. */
     g_last_battery_mv = (double)voltage * 1000.0;
 
-    /* Determine charging state before sign flip:
-     * Zephyr reports positive val1 for charging current */
     if (is_charging) {
         *is_charging = (i_val.val1 > 0) ||
                        (i_val.val1 == 0 && i_val.val2 > 0);
     }
 
-    /* Drive the Coulomb-counting algorithm.
-     * k_uptime_delta_32() returns ms since last call — convert to seconds. */
     static int64_t last_sample_ms = 0;
     int64_t now_ms = k_uptime_get();
     float delta_sec = (last_sample_ms > 0)
         ? (float)(now_ms - last_sample_ms) / 1000.0f
-        : 0.0f;  /* first call — no delta yet, fuel gauge uses init state */
+        : 0.0f;
     last_sample_ms = now_ms;
 
     float soc = nrf_fuel_gauge_process(voltage, current, temp, delta_sec, NULL);
@@ -333,6 +331,7 @@ static float battery_read_soc(bool *is_charging)
             (double)soc, (double)delta_sec);
 
     return soc;
+#endif /* CONFIG_NRF_FUEL_GAUGE */
 }
 #endif /* CONFIG_CONEXIO_CLOUD_BATTERY_METRICS */
 
