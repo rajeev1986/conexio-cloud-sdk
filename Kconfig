@@ -304,14 +304,16 @@ config CONEXIO_FUEL_GAUGE_PSM_SLEEP_CURRENT_UA
 
 config CONEXIO_FUEL_GAUGE_STACK_SIZE
 	int "nPM13xx fuel gauge sampling thread stack size (bytes)"
-	default 1024
-	range 512 4096
+	default 2048
+	range 1024 8192
 	depends on CONEXIO_CLOUD_BATTERY_METRICS
 	help
 	  Stack size for the fuel gauge background sampling thread.
-	  The thread calls sensor_sample_fetch(), nrf_fuel_gauge_process(),
-	  and nrf_fuel_gauge_ext_state_update() — 1024 bytes is sufficient
-	  for all these. Increase only if custom logging or tracing overflows.
+	  The thread calls sensor_sample_fetch(), nrf_fuel_gauge_init(),
+	  nrf_fuel_gauge_process(), and nrf_fuel_gauge_ext_state_update().
+	  The nRF Fuel Gauge library is a precompiled binary whose init path
+	  uses more stack than the steady-state process() loop — 2048 bytes
+	  is the safe minimum. Increase if you see stack overflow faults.
 
 config CONEXIO_CLOUD_MODEM_INFO_REFRESH
 	int "Modem info refresh interval (publishes)"
