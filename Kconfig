@@ -277,6 +277,8 @@ config CONEXIO_FUEL_GAUGE_PSM_RATE_MS
 	default 30000
 	range 5000 300000
 	depends on CONEXIO_CLOUD_BATTERY_METRICS && CONEXIO_CLOUD_PSM
+	select LTE_LC_MODEM_SLEEP_MODULE
+	select LTE_LC_MODEM_SLEEP_NOTIFICATIONS
 	help
 	  How often the fuel gauge sampling thread calls nrf_fuel_gauge_process()
 	  when CONFIG_CONEXIO_CLOUD_PSM=y is active.
@@ -284,6 +286,11 @@ config CONEXIO_FUEL_GAUGE_PSM_RATE_MS
 	  During PSM sleep the modem draws only ~2–3 µA so battery drain is
 	  negligible between samples. Sampling less frequently saves CPU wake-ups
 	  without meaningfully reducing SOC accuracy.
+
+	  Automatically enables LTE_LC_MODEM_SLEEP_MODULE and
+	  LTE_LC_MODEM_SLEEP_NOTIFICATIONS so the modem fires
+	  LTE_LC_EVT_MODEM_SLEEP_ENTER/EXIT events — these are what
+	  power_mgr_is_psm_active() watches to switch between rates.
 
 	  Valid range: 5000–300000 ms. Default: 30000 ms (30 s).
 
