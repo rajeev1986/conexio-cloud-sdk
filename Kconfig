@@ -244,6 +244,8 @@ config CONEXIO_CLOUD_BATTERY_METRICS
 	bool "Enable nPM1300 fuel gauge battery health metrics"
 	default n
 	depends on NRF_FUEL_GAUGE
+	select LTE_LC_MODEM_SLEEP_MODULE
+	select LTE_LC_MODEM_SLEEP_NOTIFICATIONS
 	help
 	  When enabled, the SDK automatically initialises the nPM1300 fuel gauge
 	  (via conexio_fuel_gauge_init) and reads battery health metrics on every
@@ -256,6 +258,8 @@ config CONEXIO_CLOUD_BATTERY_METRICS
 	  and the SDK handles init, update, and metric publishing automatically.
 	  Requires a 'pmic_charger' node in the devicetree (Conexio Stratus Pro default).
 	  Set CONFIG_CONEXIO_CLOUD_AUTO_BATTERY=n to avoid double-reporting voltage.
+	  Automatically enables LTE_LC_MODEM_SLEEP_MODULE and MODEM_SLEEP_NOTIFICATIONS
+	  so the modem fires sleep enter/exit events used for adaptive FG sampling.
 
 config CONEXIO_FUEL_GAUGE_ACTIVE_RATE_MS
 	int "nPM13xx fuel gauge sampling interval — modem active (ms)"
@@ -277,8 +281,6 @@ config CONEXIO_FUEL_GAUGE_PSM_RATE_MS
 	default 30000
 	range 5000 300000
 	depends on CONEXIO_CLOUD_BATTERY_METRICS && CONEXIO_CLOUD_PSM
-	select LTE_LC_MODEM_SLEEP_MODULE
-	select LTE_LC_MODEM_SLEEP_NOTIFICATIONS
 	help
 	  How often the fuel gauge sampling thread calls nrf_fuel_gauge_process()
 	  when CONFIG_CONEXIO_CLOUD_PSM=y is active.
@@ -287,9 +289,9 @@ config CONEXIO_FUEL_GAUGE_PSM_RATE_MS
 	  negligible between samples. Sampling less frequently saves CPU wake-ups
 	  without meaningfully reducing SOC accuracy.
 
-	  Automatically enables LTE_LC_MODEM_SLEEP_MODULE and
-	  LTE_LC_MODEM_SLEEP_NOTIFICATIONS so the modem fires
-	  LTE_LC_EVT_MODEM_SLEEP_ENTER/EXIT events — these are what
+	  LTE_LC_MODEM_SLEEP_MODULE and LTE_LC_MODEM_SLEEP_NOTIFICATIONS are
+	  selected automatically by CONEXIO_CLOUD_BATTERY_METRICS so the modem
+	  fires LTE_LC_EVT_MODEM_SLEEP_ENTER/EXIT events — these are what
 	  power_mgr_is_psm_active() watches to switch between rates.
 
 	  Valid range: 5000–300000 ms. Default: 30000 ms (30 s).
