@@ -2078,6 +2078,13 @@ skip_modem_metrics_cbor:;
         float soc = battery_read_soc(&is_charging);
         if (soc >= 0.0f) {
             enc = cbor_add_float32(enc, "_batt_soc", soc);
+            /* _batt_mv from fuel gauge — more accurate than modem AT%XVBAT.
+             * g_last_battery_mv is populated by battery_read_soc() above
+             * via conexio_fuel_gauge_read_mv() from the 1Hz cache. */
+            if (!isnan(g_last_battery_mv) && g_last_battery_mv > 0.0) {
+                enc = cbor_add_uint32(enc, "_batt_mv",
+                                      (uint32_t)g_last_battery_mv);
+            }
             int64_t now_ms = k_uptime_get();
             if (!is_charging && g_last_soc_pct >= 0.0f
                 && g_last_pub_time_ms > 0) {
@@ -2577,6 +2584,11 @@ skip_modem_metrics:;  /* jump target if modem_info_params_get fails */
         float soc = battery_read_soc(&is_charging);
         if (soc >= 0.0f) {
             cJSON_AddNumberToObject(metrics, "_batt_soc", (double)soc);
+
+            /* _batt_mv from fuel gauge — more accurate than modem AT%XVBAT */
+            if (!isnan(g_last_battery_mv) && g_last_battery_mv > 0.0) {
+                cJSON_AddNumberToObject(metrics, "_batt_mv", g_last_battery_mv);
+            }
 
             int64_t now_ms = k_uptime_get();
             if (!is_charging && g_last_soc_pct >= 0.0f && g_last_pub_time_ms > 0) {
