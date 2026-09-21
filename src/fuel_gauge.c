@@ -45,7 +45,7 @@
 
 #include "fuel_gauge.h"
 
-LOG_MODULE_REGISTER(fuel_gauge, LOG_LEVEL_DBG);
+LOG_MODULE_REGISTER(fuel_gauge, LOG_LEVEL_INF);
 
 /* ── Battery model ────────────────────────────────────────────────────────
  * LP963450 lithium polymer cell (Conexio Stratus Pro).
