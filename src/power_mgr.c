@@ -23,6 +23,15 @@
 #include <stdio.h>
 #include "power_mgr.h"
 
+/* Forward declarations for fuel gauge sleep notifications.
+ * Only compiled when the fuel gauge module is active.
+ * Defined in fuel_gauge.c — called directly from the LTE event handler
+ * so the fuel gauge library is informed of sleep state changes
+ * on the same thread that receives the modem event (avoids race). */
+#if defined(CONFIG_CONEXIO_CLOUD_BATTERY_METRICS) && defined(CONFIG_NRF_FUEL_GAUGE)
+#include "fuel_gauge.h"
+#endif
+
 LOG_MODULE_REGISTER(power_mgr, LOG_LEVEL_INF);
 
 static bool g_psm_active = false;
@@ -83,12 +92,18 @@ static void lte_evt_handler(const struct lte_lc_evt *const evt)
     case LTE_LC_EVT_MODEM_SLEEP_ENTER:
         LOG_DBG("Modem entered PSM sleep");
         g_psm_sleeping = true;
+#if defined(CONFIG_CONEXIO_CLOUD_BATTERY_METRICS) && defined(CONFIG_NRF_FUEL_GAUGE)
+        conexio_fuel_gauge_on_sleep_enter();
+#endif
         break;
 
     case LTE_LC_EVT_MODEM_SLEEP_EXIT:
         LOG_DBG("Modem exited PSM sleep — giving ready semaphore");
         g_psm_sleeping = false;
         k_sem_give(&modem_ready_sem);
+#if defined(CONFIG_CONEXIO_CLOUD_BATTERY_METRICS) && defined(CONFIG_NRF_FUEL_GAUGE)
+        conexio_fuel_gauge_on_sleep_exit();
+#endif
         break;
 #endif /* CONFIG_LTE_LC_MODEM_SLEEP_MODULE */
 

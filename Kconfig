@@ -276,25 +276,31 @@ config CONEXIO_FUEL_GAUGE_ACTIVE_RATE_MS
 
 	  Valid range: 100–10000 ms. Default: 1000 ms (1 Hz).
 
-config CONEXIO_FUEL_GAUGE_PSM_RATE_MS
-	int "nPM13xx fuel gauge sampling interval — PSM sleep (ms)"
-	default 30000
-	range 5000 300000
+config CONEXIO_FUEL_GAUGE_PSM_SLEEP_CURRENT_UA
+	int "Expected system quiescent current during PSM sleep (µA)"
+	default 20
+	range 1 500
 	depends on CONEXIO_CLOUD_BATTERY_METRICS && CONEXIO_CLOUD_PSM
 	help
-	  How often the fuel gauge sampling thread calls nrf_fuel_gauge_process()
-	  when CONFIG_CONEXIO_CLOUD_PSM=y is active.
+	  When the modem enters PSM sleep the fuel gauge sampling thread is
+	  suspended and nrf_fuel_gauge_idle_set() is called with this value
+	  (converted from µA to A internally) as the expected average system
+	  current. The library integrates this fixed current over the sleep
+	  duration without any sensor reads — accurate and zero CPU overhead.
 
-	  During PSM sleep the modem draws only ~2–3 µA so battery drain is
-	  negligible between samples. Sampling less frequently saves CPU wake-ups
-	  without meaningfully reducing SOC accuracy.
+	  Set this to the total system quiescent current in PSM sleep:
+	    nRF9151 PSM sleep:  ~2.5 µA
+	    nPM13xx fuel gauge:  ~8 µA
+	    Other always-on:    ~10 µA
+	    ─────────────────────────
+	    Typical total:      ~20 µA  (default)
 
-	  LTE_LC_MODEM_SLEEP_MODULE and LTE_LC_MODEM_SLEEP_NOTIFICATIONS are
-	  selected automatically by CONEXIO_CLOUD_BATTERY_METRICS so the modem
-	  fires LTE_LC_EVT_MODEM_SLEEP_ENTER/EXIT events — these are what
-	  power_mgr_is_psm_active() watches to switch between rates.
+	  Measure with a current probe and adjust for your hardware variant.
+	  Over-estimating drains the modelled SOC faster than reality;
+	  under-estimating keeps it too optimistic. 20 µA is a safe default
+	  for the Conexio Stratus Pro.
 
-	  Valid range: 5000–300000 ms. Default: 30000 ms (30 s).
+	  Valid range: 1–500 µA. Default: 20 µA.
 
 config CONEXIO_FUEL_GAUGE_STACK_SIZE
 	int "nPM13xx fuel gauge sampling thread stack size (bytes)"
