@@ -13,14 +13,7 @@ target_include_directories(app PRIVATE
   ${ZEPHYR_CJSON_MODULE_DIR}
 )
 
-# ── nPM1300 fuel gauge ────────────────────────────────────────────────────────
-# fuel_gauge.c, fuel_gauge.h, and battery_model.inc are copied from
-# conexio_stratus/npm1300_fuel_gauge/src into this app's src/ directory.
-# battery_model.inc is #include'd directly by fuel_gauge.c so it only needs
-# to be on the same search path as fuel_gauge.c — no extra include dir needed.
-target_sources(app PRIVATE src/fuel_gauge.c)
-
-# ── Embed AWS Root CA as a binary include ─────────────────────────────────────
+# ── Embed Root CA as a binary include ────────────────────────────────────────
 set(CERT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/certs)
 
 generate_inc_file_for_target(app

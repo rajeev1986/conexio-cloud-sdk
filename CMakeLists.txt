@@ -47,11 +47,20 @@ if(CONFIG_CONEXIO_CLOUD)
     target_sources(app PRIVATE src/retry.c)
   endif()
 
-  # ── Cellular location — AT%NCELLMEAS → AWS Location Service ─────────────────
+  # ── Cellular location — AT%NCELLMEAS → Conexio Location Service ─────────────
   # Enable with CONFIG_CELL_LOCATION=y in prj.conf.
   # Measurement interval controlled by CONFIG_CELL_LOCATION_INTERVAL_SEC.
   if(CONFIG_CELL_LOCATION)
     target_sources(app PRIVATE src/cell_location.c)
+  endif()
+  # ── nPM13xx fuel gauge — battery voltage, SOC, drain rate ────────────────────
+  # Enable with CONFIG_NRF_FUEL_GAUGE=y in prj.conf.
+  # Requires CONFIG_CONEXIO_CLOUD_BATTERY_METRICS=y to publish _batt_soc and
+  # _batt_drain_hr. LP963450_25C.inc (Conexio Stratus Pro cell model) lives in
+  # src/ and is #include'd directly by fuel_gauge.c — no extra include dir needed.
+  # No application code required — the SDK calls init and update internally.
+  if(CONFIG_NRF_FUEL_GAUGE)
+    target_sources(app PRIVATE src/fuel_gauge.c)
   endif()
 
   # ── CBOR binary encoding — smaller payloads for LTE-M/NB-IoT ─────────────

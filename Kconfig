@@ -236,23 +236,26 @@ config CONEXIO_CLOUD_AUTO_BATTERY
 	help
 	  Reads battery voltage via the modem's AT%%XVBAT command and adds it
 	  as the _battery_mv metric in every telemetry payload.
-	  For Conexio Stratus Pro with nPM1300, register a sensor callback using
-	  conexio_cloud_register_sensor("_battery_mv", read_battery_mv, NULL)
-	  to use the more accurate fuel gauge reading instead.
+	  For Conexio Stratus Pro with nPM1300, enable CONFIG_NRF_FUEL_GAUGE=y
+	  and CONFIG_CONEXIO_CLOUD_BATTERY_METRICS=y instead — the SDK manages
+	  the fuel gauge automatically and publishes a more accurate _batt_mv.
 
 config CONEXIO_CLOUD_BATTERY_METRICS
 	bool "Enable nPM1300 fuel gauge battery health metrics"
 	default n
 	depends on NRF_FUEL_GAUGE
 	help
-	  When enabled, the SDK reads additional battery health metrics from the
-	  nPM1300 fuel gauge on every publish:
-	    _battery_soc_pct       — state of charge in percent (0–100)
-	    _battery_drain_pct_hr  — average drain rate in %/hour since last publish
-	                             (only emitted during discharge; skipped while charging)
-	  Requires CONFIG_NRF_FUEL_GAUGE=y and a 'pmic_charger' node in the devicetree.
-	  Set CONFIG_CONEXIO_CLOUD_AUTO_BATTERY=n when using this option (avoids
-	  double-reporting battery voltage via the less accurate modem AT%%XVBAT path).
+	  When enabled, the SDK automatically initialises the nPM1300 fuel gauge
+	  (via conexio_fuel_gauge_init) and reads battery health metrics on every
+	  publish cycle, adding them to the diagnostics payload:
+	    _batt_soc      — state of charge in percent (0–100)
+	    _batt_drain_hr — average drain rate in %/hour since last publish
+	                     (only emitted during discharge; skipped while charging)
+	    _batt_mv       — battery terminal voltage in millivolts (from fuel gauge)
+	  No application code required — set CONFIG_NRF_FUEL_GAUGE=y and this option,
+	  and the SDK handles init, update, and metric publishing automatically.
+	  Requires a 'pmic_charger' node in the devicetree (Conexio Stratus Pro default).
+	  Set CONFIG_CONEXIO_CLOUD_AUTO_BATTERY=n to avoid double-reporting voltage.
 
 config CONEXIO_CLOUD_MODEM_INFO_REFRESH
 	int "Modem info refresh interval (publishes)"

@@ -186,6 +186,9 @@ static uint32_t g_seq_logs         = 0;
 #if defined(CONFIG_CONEXIO_CLOUD_BATTERY_METRICS)
 #include <zephyr/drivers/sensor.h>
 #include <nrf_fuel_gauge.h>  /* nrf_fuel_gauge_process() — must be init'd before use */
+#if defined(CONFIG_NRF_FUEL_GAUGE)
+#include "fuel_gauge.h"      /* conexio_fuel_gauge_init/update/read_mv — SDK-managed */
+#endif
 
 /* nPM1300 battery SOC and drain rate tracking ──────────────────────────────
  * g_last_soc_pct:    SOC% at the previous publish (-1 = not yet read).
@@ -239,7 +242,25 @@ static void battery_metrics_init(void)
         LOG_WRN("battery_metrics: pmic_charger device not ready — "
                 "_battery_soc_pct and _battery_drain_pct_hr unavailable");
         g_pmic_charger_dev = NULL;
+        return;
     }
+
+#if defined(CONFIG_NRF_FUEL_GAUGE)
+    /* Initialise the nRF Fuel Gauge library with the LP963450 battery model.
+     * Previously this was done in main.c before conexio_cloud_init().
+     * Moving it here means app code needs zero fuel gauge boilerplate —
+     * CONFIG_NRF_FUEL_GAUGE=y is sufficient. */
+    int fg_ret = conexio_fuel_gauge_init(g_pmic_charger_dev);
+    if (fg_ret < 0) {
+        LOG_ERR("conexio_fuel_gauge_init failed (%d) — "
+                "battery metrics will use voltage only", fg_ret);
+        /* Non-fatal: battery_read_soc() returns -1.0 if fuel gauge
+         * not ready, and _batt_mv still works via direct sensor read. */
+    } else {
+        LOG_INF("nPM13xx fuel gauge ready — battery metrics active");
+    }
+#endif
+}
 }
 
 /* ── battery_read_soc ────────────────────────────────────────────────────
@@ -250,9 +271,9 @@ static void battery_metrics_init(void)
  * called with fresh V/I/T readings on every sample. We cannot simply
  * read SENSOR_CHAN_GAUGE_STATE_OF_CHARGE from the driver.
  *
- * The fuel gauge must have been initialised by calling fuel_gauge_init()
- * (done in main.c before conexio_cloud_init()). This function just
- * drives the algorithm forward on each publish cycle.
+ * The fuel gauge must have been initialised by conexio_fuel_gauge_init()
+ * which is called automatically inside battery_metrics_init() when
+ * CONFIG_NRF_FUEL_GAUGE=y. No application code needed.
  *
  * Also returns charging state via *is_charging (true = plugged in).
  * Returns SOC 0.0–100.0 on success, -1.0 on any read error.
@@ -3428,6 +3449,21 @@ int conexio_cloud_publish(void)
     if (!transport_is_connected()) return -ENOTCONN;
 
     int overall = 0;
+
+#if defined(CONFIG_CONEXIO_CLOUD_BATTERY_METRICS) && defined(CONFIG_NRF_FUEL_GAUGE)
+    /* Refresh VBUS state in the fuel gauge algorithm before any
+     * build_payload_for_category() call reads battery_read_soc().
+     * The nPM13xx charger status tells the Coulomb counter whether
+     * the battery is charging or discharging, improving SOC accuracy. */
+    if (g_pmic_charger_dev) {
+        /* Detect VBUS from charger status — positive average current = charging */
+        struct sensor_value i_val = {0};
+        sensor_sample_fetch(g_pmic_charger_dev);
+        sensor_channel_get(g_pmic_charger_dev, SENSOR_CHAN_GAUGE_AVG_CURRENT, &i_val);
+        bool vbus = (i_val.val1 > 0) || (i_val.val1 == 0 && i_val.val2 > 0);
+        conexio_fuel_gauge_update(g_pmic_charger_dev, vbus);
+    }
+#endif
 
     /* Publish each category to its own versioned topic.
      * Skip categories that have nothing to send — build_payload_for_category

@@ -59,7 +59,6 @@
 #include <zephyr/drivers/sensor.h>
 #include <zephyr/random/random.h>
 #include <zephyr/logging/log.h>
-#include <math.h>    /* NAN — returned by read_battery_mv on failure */
 
 /* App firmware version from VERSION file — generated at build time */
 #if __has_include(<app_version.h>)
@@ -68,10 +67,7 @@
 #  define APP_VERSION_STRING "unknown"
 #endif
 
-/* nPM1300 fuel gauge — battery voltage and state-of-charge */
-#include "fuel_gauge.h"
-
-/* Cellular location — collects AT%NCELLMEAS data for AWS Location Service */
+/* Cellular location — collects AT%NCELLMEAS data for Conexio Location Service */
 #if defined(CONFIG_CELL_LOCATION)
 #include <conexio_cloud/cell_location.h>
 #endif
@@ -98,17 +94,6 @@ static const struct gpio_dt_spec g_led = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
 /* ── Alert threshold limits ───────────────────────────────────────────── */
 #define ALERT_THRESHOLD_MIN         0        /* 0 = disabled                           */
 #define ALERT_THRESHOLD_MAX         200      /* Covers full sensor range               */
-
-/* ── nPM1300 fuel gauge device handles ───────────────────────────────── */
-/*
- * pmic_charger is the nPM1300 charger sub-device used by the nRF Fuel Gauge
- * library to read voltage, current, temperature, and charge status.
- * Both nodes are defined in conexio_stratus_pro_common.dtsi.
- */
-static const struct device *pmic_charger = DEVICE_DT_GET(DT_NODELABEL(pmic_charger));
-
-/* Flag set once fuel_gauge_init() has succeeded — guards read_battery_mv. */
-static bool g_fuel_gauge_ready = false;
 
 /* ── Sensor callbacks ─────────────────────────────────────────────────── */
 /*
@@ -195,68 +180,6 @@ static double read_humidity(void *arg)
     return (double)NAN;
 }
 #endif /* CONFIG_CONEXIO_SAMPLE_SIMULATED_SENSORS */
-
-/* ── Battery voltage from nPM1300 fuel gauge ──────────────────────────── */
-/*
- * Reads SENSOR_CHAN_GAUGE_VOLTAGE from the nPM1300 pmic_charger node and
- * returns the value in millivolts so the SDK publishes it as _battery_mv.
- *
- * Replaces the modem AT%XVBAT reading (CONFIG_CONEXIO_CLOUD_AUTO_BATTERY=n):
- *   - Higher accuracy: nPM1300 measures actual battery terminal voltage
- *   - Reflects true cell voltage, not the VDDMAIN rail seen by the modem
- *
- * Returns NAN if the fuel gauge has not been initialised or the read fails —
- * the SDK will skip _battery_mv for that publish cycle rather than sending 0.
- */
-static double read_battery_mv(void *arg)
-{
-    ARG_UNUSED(arg);
-
-    if (!g_fuel_gauge_ready) {
-        return (double)NAN;
-    }
-
-#if defined(CONFIG_CONEXIO_CLOUD_BATTERY_METRICS)
-    /* When CONFIG_CONEXIO_CLOUD_BATTERY_METRICS=y the SDK's battery_read_soc()
-     * has already called sensor_sample_fetch() and cached the voltage in the
-     * SDK. Re-use it — no second fetch needed on the same cycle.
-     *
-     * NOTE: The SDK calls sensor callbacks (this function) BEFORE calling
-     * battery_read_soc() in build_payload(). So on the very first publish
-     * g_last_battery_mv is NAN and we fall through to a direct read below.
-     * On all subsequent publishes the cached value is already fresh. */
-    double cached_mv = conexio_cloud_get_last_battery_mv();
-    if (!isnan(cached_mv)) {
-        return cached_mv;
-    }
-#endif
-
-    /* Direct read — used on first publish (cache not yet populated) or
-     * when CONFIG_CONEXIO_CLOUD_BATTERY_METRICS=n. */
-    struct sensor_value voltage;
-
-    int ret = sensor_sample_fetch(pmic_charger);
-    if (ret < 0) {
-        LOG_WRN("fuel gauge: sensor_sample_fetch failed (%d)", ret);
-        return (double)NAN;
-    }
-
-    ret = sensor_channel_get(pmic_charger, SENSOR_CHAN_GAUGE_VOLTAGE, &voltage);
-    if (ret < 0) {
-        LOG_WRN("fuel gauge: sensor_channel_get GAUGE_VOLTAGE failed (%d)", ret);
-        return (double)NAN;
-    }
-
-    /* SENSOR_CHAN_GAUGE_VOLTAGE: val1 = whole Volts, val2 = micro-Volts fraction.
-     * Convert to millivolts: (val1 * 1e6 + val2) / 1000 */
-    double voltage_mv = ((double)voltage.val1 * 1000.0) +
-                        ((double)voltage.val2 / 1000.0);
-
-    LOG_DBG("fuel gauge: battery %.3f V (%d mV)",
-            voltage_mv / 1000.0, (int)voltage_mv);
-
-    return voltage_mv;
-}
 
 /* ── Command handlers — hardware-specific only ────────────────────────── */
 /*
@@ -431,15 +354,8 @@ int main(void)
      * The SDK calls these before each publish — no send_metric in loop. */
     conexio_cloud_register_sensor("temperature", read_temperature, NULL);
     conexio_cloud_register_sensor("humidity",    read_humidity,    NULL);
-    /* _batt_mv from nPM1300 fuel gauge — replaces modem AT%XVBAT.
-     * Registered with the metric name "_batt_mv" so the SDK publishes
-     * it under that exact key rather than double-publishing alongside the
-     * auto-battery metric (disabled via CONFIG_CONEXIO_CLOUD_AUTO_BATTERY=n). */
-    conexio_cloud_register_sensor("_batt_mv", read_battery_mv, NULL);
-
     /* ── Register application commands ───────────────────────────────
      * SDK built-ins: REBOOT, SET_INTERVAL, FIRMWARE_UPDATE
-     *
      * LED_ON / LED_OFF are used with Device Schedules to test
      * timed command delivery from the Conexio Console.             */
     conexio_cloud_register_command("FAN_ON",  on_fan_on,  NULL);
@@ -484,19 +400,6 @@ int main(void)
      *   conexio_cloud_set_fota_can_start_cb(safe_to_update);
      *
      * Without this, FOTA downloads start immediately when commanded.      */
-
-    /* ── nPM1300 fuel gauge init ──────────────────────────────────────────
-     * Initialises the nRF Fuel Gauge library with battery model and initial
-     * readings. Must happen before conexio_cloud_init() so read_battery_mv()
-     * is ready when the SDK background thread calls it on the first publish. */
-    if (!device_is_ready(pmic_charger)) {
-        LOG_ERR("pmic_charger device not ready — battery voltage unavailable");
-    } else if (fuel_gauge_init(pmic_charger) < 0) {
-        LOG_ERR("fuel_gauge_init failed — battery voltage unavailable");
-    } else {
-        g_fuel_gauge_ready = true;
-        LOG_INF("nPM1300 fuel gauge initialised");
-    }
 
     /* ── Single SDK init — handles everything ─────────────────────────
      * LTE → NTP → PSM decision → config fetch → transport init →
