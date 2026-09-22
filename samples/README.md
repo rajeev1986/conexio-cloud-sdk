@@ -39,7 +39,7 @@ device_schedules → cellular_location → offline_buffer → fota
 # Build any sample (replace <sample> with the folder name)
 cd samples/<sample>
 west build -b conexio_stratus_pro/nrf9151/ns --pristine
-west flash
+newtmgr -c serial image upload build/<sample>/zephyr/zephyr.signed.bin
 ```
 
 ---

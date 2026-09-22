@@ -36,7 +36,7 @@ west build -b conexio_stratus_pro/nrf9151/ns -- \
   -DEXTRA_CONF_FILE=low_power.conf   # optional: disable UART for field builds
 
 # Flash
-west flash
+newtmgr -c serial image upload build/app/zephyr/zephyr.signed.bin
 
 # Monitor serial output (development)
 west espressif monitor   # or: screen /dev/tty.usbmodem* 115200

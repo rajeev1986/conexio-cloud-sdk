@@ -50,7 +50,7 @@ Cloud delivers LED_ON + stopAt
 
 ```bash
 west build -b conexio_stratus_pro/nrf9151/ns --pristine
-west flash
+newtmgr -c serial image upload build/device_schedules/zephyr/zephyr.signed.bin
 ```
 
 ---

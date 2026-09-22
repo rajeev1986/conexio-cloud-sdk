@@ -55,7 +55,7 @@ Conexio Console Fleet Map.
 
 ```bash
 west build -b conexio_stratus_pro/nrf9151/ns --pristine
-west flash
+newtmgr -c serial image upload build/cellular_location/zephyr/zephyr.signed.bin
 ```
 
 ---

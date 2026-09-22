@@ -33,7 +33,7 @@ effect immediately.
 
 ```bash
 west build -b conexio_stratus_pro/nrf9151/ns --pristine
-west flash
+newtmgr -c serial image upload build/device_settings/zephyr/zephyr.signed.bin
 ```
 
 ---

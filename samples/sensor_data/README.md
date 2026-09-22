@@ -34,7 +34,7 @@ driver calls for production hardware.
 ```bash
 # Default — simulated sensors
 west build -b conexio_stratus_pro/nrf9151/ns --pristine
-west flash
+newtmgr -c serial image upload build/sensor_data/zephyr/zephyr.signed.bin
 
 # Real sensors (implement read_temperature/read_humidity in main.c first)
 west build -b conexio_stratus_pro/nrf9151/ns --pristine -- \

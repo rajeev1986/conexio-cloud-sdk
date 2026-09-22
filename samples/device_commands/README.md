@@ -46,7 +46,7 @@ your registered handler functions.
 
 ```bash
 west build -b conexio_stratus_pro/nrf9151/ns --pristine
-west flash
+newtmgr -c serial image upload build/device_commands/zephyr/zephyr.signed.bin
 ```
 
 ---

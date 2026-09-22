@@ -47,7 +47,7 @@ FOTA requires MCUboot (dual-bank layout). It is auto-selected when
 ```bash
 # Build v1.0.0 (initial)
 west build -b conexio_stratus_pro/nrf9151/ns --pristine
-west flash
+newtmgr -c serial image upload build/fota/zephyr/zephyr.signed.bin
 
 # Build v1.1.0 (update) — change VERSION file first:
 #   PATCHLEVEL = 1
