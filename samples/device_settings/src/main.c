@@ -30,6 +30,8 @@
 #include <conexio_cloud/conexio_cloud.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <math.h>   /* NAN — returned by read_uptime in silent mode */
+#include <string.h> /* strcmp */
 
 #if __has_include(<app_version.h>)
 #  include <app_version.h>
@@ -75,7 +77,7 @@ static enum conexio_setting_status on_reporting_mode(const char *value, void *ar
         strcmp(value, "verbose") != 0 &&
         strcmp(value, "silent")  != 0) {
         LOG_WRN("Setting: reportingMode — unknown value '%s', rejecting", value);
-        return CONEXIO_SETTING_REJECTED;
+        return CONEXIO_SETTING_ERROR;
     }
     strncpy(g_reporting_mode, value, sizeof(g_reporting_mode) - 1);
     LOG_INF("Setting: reportingMode → %s", g_reporting_mode);
@@ -133,7 +135,7 @@ int main(void)
         "alertThreshold", 0, 100, on_alert_threshold, NULL);
     conexio_cloud_register_setting_bool(
         "loggingEnabled", on_logging_enabled, NULL);
-    conexio_cloud_register_setting_str(
+    conexio_cloud_register_setting_string(
         "reportingMode", on_reporting_mode, NULL);
 
     int ret = conexio_cloud_init(on_cloud_event);
