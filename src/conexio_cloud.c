@@ -135,11 +135,15 @@
 #if defined(CONFIG_CONEXIO_CLOUD_FOTA)
 #include "fota.h"
 #include <zephyr/dfu/mcuboot.h>   /* boot_is_img_confirmed */
-#include <zephyr/sys/reboot.h>
 #endif
 #if defined(CONFIG_CONEXIO_CLOUD_LOG_STREAM)
 #include "log_stream.h"
 #endif
+
+/* sys_reboot() — used by the built-in REBOOT command handler regardless of FOTA */
+#include <zephyr/sys/reboot.h>
+/* llabs() — used in timestamp formatting */
+#include <stdlib.h>
 
 /* SDK semantic version — reported in every telemetry payload as _sdk_version */
 #define CONEXIO_SDK_VERSION "2.3.0"
@@ -187,33 +191,13 @@ static uint32_t g_seq_logs         = 0;
  * event handler knows to skip retry_on_failure(). Cleared after use. */
 static bool g_intentional_disconnect = false;
 
-#if defined(CONFIG_CONEXIO_CLOUD_BATTERY_METRICS)
-#include <zephyr/drivers/sensor.h>
-#include <nrf_fuel_gauge.h>  /* nrf_fuel_gauge_process() — must be init'd before use */
-#if defined(CONFIG_NRF_FUEL_GAUGE)
-#include "fuel_gauge.h"      /* conexio_fuel_gauge_init/update/read_mv — SDK-managed */
-#endif
-
-/* nPM1300 battery SOC and drain rate tracking ──────────────────────────────
- * g_last_soc_pct:    SOC% at the previous publish (-1 = not yet read).
- * g_last_pub_time_ms: k_uptime_get() at the previous publish.
- * We track these between publishes to compute instantaneous drain rate. */
-static float    g_last_soc_pct      = -1.0f;  /* float — preserves sub-percent precision */
-static int64_t  g_last_pub_time_ms  =  0;
-static double   g_last_battery_mv   = NAN; /* voltage from most recent fuel gauge read */
-
 /* ── Cached RSRP — updated asynchronously via %CESQ notification ─────────
- * The modem pushes a %CESQ notification whenever it measures a new signal
- * quality value. We cache the latest valid RSRP index here so build_payload()
- * always has a fresh value, even right after PSM wake when AT+CESQ
- * (polled via modem_info_params_get) may still return 255 (not measured yet).
+ * Used in every build — always unconditional, not tied to battery metrics.
  * INT16_MIN = "never received a valid reading" sentinel. */
 #define RSRP_NOT_KNOWN_IDX  255
 #define RSRP_CACHE_INVALID  INT16_MIN
 static int16_t  g_cached_rsrp_idx  = RSRP_CACHE_INVALID;
 
-/* Called by modem_info whenever the modem pushes a fresh %CESQ notification.
- * The value is the raw RSRP index (not dBm). 255 = not measured — discard. */
 static void on_rsrp_notification(char rsrp_value)
 {
     uint8_t idx = (uint8_t)rsrp_value;
@@ -224,9 +208,18 @@ static void on_rsrp_notification(char rsrp_value)
 }
 
 #if defined(CONFIG_CONEXIO_CLOUD_BATTERY_METRICS)
-/** Returns the battery voltage (mV) cached by the last fuel gauge read.
- *  Returns NAN if no fuel gauge read has occurred yet this session.
- *  Used by read_battery_mv() in main.c to avoid a second sensor_sample_fetch. */
+#include <zephyr/drivers/sensor.h>
+#include <nrf_fuel_gauge.h>  /* nrf_fuel_gauge_process() — must be init'd before use */
+#if defined(CONFIG_NRF_FUEL_GAUGE)
+#include "fuel_gauge.h"      /* conexio_fuel_gauge_init/update/read_mv — SDK-managed */
+#endif
+
+/* nPM1300 battery SOC and drain rate tracking */
+static float    g_last_soc_pct      = -1.0f;
+static int64_t  g_last_pub_time_ms  =  0;
+static double   g_last_battery_mv   = NAN;
+
+/** Returns the battery voltage (mV) cached by the last fuel gauge read. */
 double conexio_cloud_get_last_battery_mv(void) { return g_last_battery_mv; }
 #endif
 
