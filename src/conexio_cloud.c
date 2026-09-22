@@ -183,6 +183,10 @@ static uint32_t g_seq_diagnostics  = 0;
 static uint32_t g_seq_location     = 0;
 static uint32_t g_seq_logs         = 0;
 
+/* Flag set before an intentional pre-PSM disconnect so the DISCONNECTED
+ * event handler knows to skip retry_on_failure(). Cleared after use. */
+static bool g_intentional_disconnect = false;
+
 #if defined(CONFIG_CONEXIO_CLOUD_BATTERY_METRICS)
 #include <zephyr/drivers/sensor.h>
 #include <nrf_fuel_gauge.h>  /* nrf_fuel_gauge_process() — must be init'd before use */
@@ -197,10 +201,6 @@ static uint32_t g_seq_logs         = 0;
 static float    g_last_soc_pct      = -1.0f;  /* float — preserves sub-percent precision */
 static int64_t  g_last_pub_time_ms  =  0;
 static double   g_last_battery_mv   = NAN; /* voltage from most recent fuel gauge read */
-
-/* Flag set before an intentional pre-PSM disconnect so the DISCONNECTED
- * event handler knows to skip retry_on_failure(). Cleared after use. */
-static bool g_intentional_disconnect = false;
 
 /* ── Cached RSRP — updated asynchronously via %CESQ notification ─────────
  * The modem pushes a %CESQ notification whenever it measures a new signal
