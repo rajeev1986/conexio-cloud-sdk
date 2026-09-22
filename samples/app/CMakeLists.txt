@@ -13,10 +13,7 @@ target_include_directories(app PRIVATE
   ${ZEPHYR_CJSON_MODULE_DIR}
 )
 
-# ── Embed Root CA as a binary include ────────────────────────────────────────
-set(CERT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/certs)
-
-generate_inc_file_for_target(app
-  ${CERT_DIR}/AmazonRootCA1.pem
-  ${ZEPHYR_BINARY_DIR}/include/generated/aws_root_ca.pem.inc
-)
+# ── Root CA cert ──────────────────────────────────────────────────────────────
+# The Conexio Root CA (ConexioRootCA1.pem) is now embedded by the SDK itself.
+# It lives in sdk/src/certs/ and is generated into conexio_root_ca.pem.inc
+# by the SDK CMakeLists.txt — no entry needed here.

@@ -2,6 +2,16 @@ cmake_minimum_required(VERSION 3.20.0)
 
 if(CONFIG_CONEXIO_CLOUD)
 
+  # ── Conexio Root CA — embedded into cert_store.c at build time ──────────────
+  # The Root CA is public and identical for every device — safe to embed in the
+  # SDK so no sample or application needs to carry or reference it.
+  # cert_store.c includes the generated conexio_root_ca.pem.inc directly.
+  set(CONEXIO_CERT_DIR ${CMAKE_CURRENT_LIST_DIR}/src/certs)
+  generate_inc_file_for_target(app
+    ${CONEXIO_CERT_DIR}/ConexioRootCA1.pem
+    ${ZEPHYR_BINARY_DIR}/include/generated/conexio_root_ca.pem.inc
+  )
+
   # Public headers — application only needs to #include <conexio_cloud/conexio_cloud.h>
   # and the feature headers (fota.h, offline_buffer.h, power_mgr.h, retry.h)
   target_include_directories(app PUBLIC include src)
