@@ -11,9 +11,8 @@ effect immediately.
 
 ## What this sample does
 
-- Registers three application settings:
+- Registers two application settings:
   - `alertThreshold` (integer, 0–100) — temperature alert trigger in °C
-  - `loggingEnabled` (boolean) — enable/disable local debug logging
   - `reportingMode` (string) — `"normal"` | `"verbose"` | `"silent"`
 - Built-in SDK setting `telemetryIntervalSec` works automatically
 - Logs every received setting update
@@ -80,7 +79,6 @@ Return `CONEXIO_SETTING_OK` to accept or `CONEXIO_SETTING_REJECTED` to refuse.
 ...
 [00:01:05.234] <inf> app: Setting: alertThreshold → 28 °C
 [00:01:10.512] <inf> app: Setting: reportingMode → verbose
-[00:01:15.890] <inf> app: Setting: loggingEnabled → false
 ```
 
 ---
@@ -92,8 +90,7 @@ Return `CONEXIO_SETTING_OK` to accept or `CONEXIO_SETTING_REJECTED` to refuse.
   "type": "config",
   "settings": {
     "alertThreshold": 28,
-    "reportingMode": "verbose",
-    "loggingEnabled": false
+    "reportingMode": "verbose"
   }
 }
 ```

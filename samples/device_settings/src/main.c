@@ -11,7 +11,6 @@
  * Application settings demonstrated in this sample:
  *   reportingMode (string)  — "normal" | "verbose" | "silent"
  *   alertThreshold (int)    — temperature alert trigger (°C)
- *   loggingEnabled (bool)   — enable/disable local debug logging
  *
  * How to test from Conexio Console:
  *   1. Go to your device → OTA Config tab
@@ -31,7 +30,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <math.h>   /* NAN — returned by read_uptime in silent mode */
-#include <string.h> /* strcmp */
+#include <string.h> /* strcmp, strncpy */
 
 #if __has_include(<app_version.h>)
 #  include <app_version.h>
@@ -42,16 +41,15 @@
 LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
 
 /* ── Application state — updated by settings handlers ──────────────────── */
-static int   g_alert_threshold = 35;    /* °C — alert fires above this */
-static bool  g_logging_enabled = true;  /* local debug logging flag */
-static char  g_reporting_mode[16] = "normal"; /* "normal"|"verbose"|"silent" */
+static int  g_alert_threshold = 35;          /* °C — alert fires above this */
+static char g_reporting_mode[16] = "normal"; /* "normal" | "verbose" | "silent" */
 
 /* ── Settings handlers ────────────────────────────────────────────────────
- * Return CONEXIO_SETTING_OK to accept the value, CONEXIO_SETTING_REJECTED
- * to reject it (the Console will mark the setting as failed).
+ * Return CONEXIO_SETTING_OK to accept the value.
+ * Return CONEXIO_SETTING_ERROR to reject it (Console marks setting as failed).
  *
  * For int settings use _with_range to have the SDK validate bounds before
- * calling your handler — no manual range check needed.
+ * calling your handler — no manual range check needed in the callback.
  */
 
 static enum conexio_setting_status on_alert_threshold(int32_t value, void *arg)
@@ -59,14 +57,6 @@ static enum conexio_setting_status on_alert_threshold(int32_t value, void *arg)
     ARG_UNUSED(arg);
     g_alert_threshold = (int)value;
     LOG_INF("Setting: alertThreshold → %d °C", g_alert_threshold);
-    return CONEXIO_SETTING_OK;
-}
-
-static enum conexio_setting_status on_logging_enabled(bool value, void *arg)
-{
-    ARG_UNUSED(arg);
-    g_logging_enabled = value;
-    LOG_INF("Setting: loggingEnabled → %s", value ? "true" : "false");
     return CONEXIO_SETTING_OK;
 }
 
@@ -118,10 +108,8 @@ static void on_cloud_event(const struct conexio_cloud_event *evt)
 int main(void)
 {
     LOG_INF("=== Conexio Device Settings Sample ===");
-    LOG_INF("Defaults: threshold=%d°C logging=%s mode=%s",
-            g_alert_threshold,
-            g_logging_enabled ? "on" : "off",
-            g_reporting_mode);
+    LOG_INF("Defaults: threshold=%d°C mode=%s",
+            g_alert_threshold, g_reporting_mode);
 
     /* Register sensor so we have something to publish */
     conexio_cloud_register_sensor("uptime_sec", read_uptime, NULL);
@@ -133,8 +121,6 @@ int main(void)
      */
     conexio_cloud_register_setting_int_with_range(
         "alertThreshold", 0, 100, on_alert_threshold, NULL);
-    conexio_cloud_register_setting_bool(
-        "loggingEnabled", on_logging_enabled, NULL);
     conexio_cloud_register_setting_string(
         "reportingMode", on_reporting_mode, NULL);
 
