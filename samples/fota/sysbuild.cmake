@@ -24,7 +24,12 @@ get_filename_component(SDK_ROOT "${APP_DIR}/../.." ABSOLUTE)
 set(CONEXIO_SIGNING_KEY "${SDK_ROOT}/keys/conexio-fota-signing.pem")
 
 if(EXISTS "${CONEXIO_SIGNING_KEY}")
-  set_config_string(mcuboot SB_CONFIG_BOOT_SIGNATURE_KEY_FILE "${CONEXIO_SIGNING_KEY}")
+  # SB_CONFIG_BOOT_SIGNATURE_KEY_FILE is a sysbuild-level Kconfig string.
+  # Set it via the sysbuild cache so it is available during Kconfig processing.
+  # Do NOT use set_config_string(mcuboot ...) — that injects into the MCUboot
+  # image's Kconfig space where this symbol is unknown, causing a parse error.
+  set(SB_CONFIG_BOOT_SIGNATURE_KEY_FILE "${CONEXIO_SIGNING_KEY}"
+      CACHE STRING "MCUboot image signing key" FORCE)
   message(STATUS "Conexio FOTA: signing key: ${CONEXIO_SIGNING_KEY}")
 else()
   message(WARNING "Conexio FOTA: signing key not found at ${CONEXIO_SIGNING_KEY}. "

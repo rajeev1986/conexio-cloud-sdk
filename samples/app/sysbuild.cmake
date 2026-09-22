@@ -8,7 +8,8 @@ get_filename_component(SDK_ROOT "${APP_DIR}/../.." ABSOLUTE)
 set(CONEXIO_SIGNING_KEY "${SDK_ROOT}/keys/conexio-fota-signing.pem")
 
 if(EXISTS "${CONEXIO_SIGNING_KEY}")
-  set_config_string(mcuboot SB_CONFIG_BOOT_SIGNATURE_KEY_FILE "${CONEXIO_SIGNING_KEY}")
+  set(SB_CONFIG_BOOT_SIGNATURE_KEY_FILE "${CONEXIO_SIGNING_KEY}"
+      CACHE STRING "MCUboot image signing key" FORCE)
   message(STATUS "Conexio FOTA: signing key: ${CONEXIO_SIGNING_KEY}")
 else()
   message(WARNING "Conexio FOTA: signing key not found at ${CONEXIO_SIGNING_KEY}. "
