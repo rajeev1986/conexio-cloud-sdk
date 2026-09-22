@@ -221,7 +221,6 @@ static double   g_last_battery_mv   = NAN;
 
 /** Returns the battery voltage (mV) cached by the last fuel gauge read. */
 double conexio_cloud_get_last_battery_mv(void) { return g_last_battery_mv; }
-#endif
 
 /* Device handle — obtained lazily on first use. */
 static const struct device *g_pmic_charger_dev;
