@@ -39,7 +39,7 @@ west build -b conexio_stratus_pro/nrf9151/ns -- \
 newtmgr -c serial image upload build/app/zephyr/zephyr.signed.bin
 
 # Monitor serial output (development)
-west espressif monitor   # or: screen /dev/tty.usbmodem* 115200
+screen /dev/tty.usbmodem* 115200
 ```
 
 ---
