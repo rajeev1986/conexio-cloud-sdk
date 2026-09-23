@@ -1,0 +1,12 @@
+mainmenu "Conexio Sensor Data Sample"
+
+source "Kconfig.zephyr"
+
+config CONEXIO_SAMPLE_SIMULATED_SENSORS
+	bool "Use simulated (random) sensor data"
+	default y
+	help
+	  When enabled (default), temperature and humidity callbacks return
+	  random values for demonstration purposes. A compiler warning is
+	  emitted as a reminder to replace them before deploying to production.
+	  Set to n and implement real sensor reads in main.c.
