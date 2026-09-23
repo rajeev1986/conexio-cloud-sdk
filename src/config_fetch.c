@@ -44,14 +44,15 @@
  */
 
 #include <zephyr/kernel.h>
-#include <zephyr/net/socket.h>           /* POSIX-style BSD sockets        */
-#include <zephyr/net/tls_credentials.h>  /* TLS security tag management    */
-#include <zephyr/net/http/client.h>       /* Lightweight HTTP/1.1 client    */
-#include <modem/modem_key_mgmt.h>         /* Write certs to modem NVM       */
-#include <cJSON.h>                         /* JSON parser                    */
-#include <cJSON_os.h>                      /* Zephyr memory adapter for cJSON */
+#include <zephyr/net/socket.h>
+#include <zephyr/net/tls_credentials.h>
+#include <zephyr/net/http/client.h>
+#include <modem/modem_key_mgmt.h>
+#include <cJSON.h>
+#include <cJSON_os.h>
 #include <zephyr/logging/log.h>
 #include <string.h>
+#include <stdio.h>
 #include "config_fetch.h"
 
 LOG_MODULE_REGISTER(config_fetch, LOG_LEVEL_INF);
@@ -149,6 +150,27 @@ static int config_http_response(struct http_response *rsp,
  */
 int config_fetch(const char *imei, struct conexio_cloud_config_t *out)
 {
+    /* ── Static broker override (development / testing) ─────────────────
+     * When CONFIG_CONEXIO_CLOUD_STATIC_BROKER is set in prj.conf, bypass
+     * the config service entirely and return the hardcoded values.
+     */
+#if defined(CONFIG_CONEXIO_CLOUD_STATIC_BROKER_ENABLED)
+    if (!config_valid) {
+        memset(&cached_config, 0, sizeof(cached_config));
+        strncpy(cached_config.mqtt_host,
+                CONFIG_CONEXIO_CLOUD_STATIC_BROKER,
+                sizeof(cached_config.mqtt_host) - 1);
+        strncpy(cached_config.root_ca_url,
+                CONFIG_CONEXIO_CLOUD_STATIC_ROOT_CA_URL,
+                sizeof(cached_config.root_ca_url) - 1);
+        config_valid         = true;
+        config_fetched_at_ms = k_uptime_get();
+        LOG_INF("Static broker override: %s", cached_config.mqtt_host);
+    }
+    memcpy(out, &cached_config, sizeof(*out));
+    return 0;
+#endif
+
     /* ── Cache check ────────────────────────────────────────────────────── */
     if (config_valid) {
         int64_t age_ms = k_uptime_get() - config_fetched_at_ms;

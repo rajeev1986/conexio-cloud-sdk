@@ -51,6 +51,26 @@ void power_mgr_sleep(void);
 bool power_mgr_is_psm_active(void);
 
 /**
+ * @brief Wait for the network's PSM grant/deny decision.
+ *
+ * Blocks until LTE_LC_EVT_PSM_UPDATE is received (network either granted
+ * or denied PSM) or @p timeout_sec expires. Always returns 0 — a timeout
+ * is not fatal; the boot sequence continues regardless.
+ *
+ * Call this after power_mgr_init() and before connecting to MQTT so that
+ * the first telemetry payload carries accurate _psm_tau_sec / _psm_active_sec
+ * values instead of the -1 sentinel.
+ *
+ * If PSM is disabled (CONFIG_CONEXIO_CLOUD_PSM=n), this function is a no-op
+ * and returns immediately.
+ *
+ * @param timeout_sec  Maximum seconds to wait. 5s is sufficient for most
+ *                     networks; the event typically arrives within 200ms.
+ * @return 0 always.
+ */
+int power_mgr_wait_psm_decision(int timeout_sec);
+
+/**
  * @brief Returns last reported RSSI in dBm. -999 if unavailable.
  */
 int power_mgr_get_rssi(void);

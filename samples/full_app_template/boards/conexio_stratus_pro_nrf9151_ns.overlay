@@ -1,0 +1,53 @@
+/*
+ * Copyright (c) 2026 Conexio Technologies, Inc
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Conexio Stratus Pro (nRF9151) overlay for the Conexio Cloud SDK sample app.
+ *
+ * LED GPIO — inherited from conexio_stratus_pro_common.dtsi:
+ *   led0 alias → gpio0 pin 25, GPIO_ACTIVE_HIGH
+ *
+ * nPM1300 fuel gauge — I2C pull-ups for pmic_charger on i2c2:
+ *   The nPM1300 PMIC (npm1300@6b) and its pmic_charger node are defined
+ *   in conexio_stratus_pro_common.dtsi. Only the i2c2 pin pull-up needs
+ *   to be enabled here to reliably communicate with the PMIC over I2C.
+ *
+ * nPM1300 NTC — the Stratus Pro does not have a thermistor physically
+ *   connected to the NTC pin. thermistor-ohms = <0> tells the driver
+ *   (npm13xx_charger.c) to write CHGR_OFFSET_DIS_SET bit 1 = 1, which
+ *   disables the NTC comparator. Without this the charger halts because
+ *   it sees an open circuit on the NTC pin and reports garbage temperature.
+ *   This replaces the manual mfd_npm1300_reg_write() workaround needed in
+ *   NCS ≤ v2.9.0 — the v3.2.1 driver handles it automatically via DTS.
+ *
+ * UART0 — low-power configuration:
+ *   When building with low_power.conf (CONFIG_SERIAL=n / CONFIG_LOG=n),
+ *   the UART RX pin is deleted to prevent current leakage through a
+ *   floating or undriven RX line. TX is kept so the UART peripheral
+ *   can still be held in a defined state by the hardware.
+ */
+
+/* Enable I2C pull-ups for nPM1300 PMIC communication */
+&i2c2_default {
+	group1 {
+		bias-pull-up;
+	};
+};
+
+/* nPM1300 charger — disable NTC (no thermistor populated on this board).
+ * thermistor-ohms = <0> → driver sets thermistor_idx = 0 → automatically
+ * writes CHGR_OFFSET_DIS_SET bit 1 at init (NTC comparator disabled).
+ * thermistor-beta must be present (binding marks it required) but is
+ * ignored by the driver when thermistor-ohms = 0. */
+&pmic_charger {
+	thermistor-ohms = <0>;
+	thermistor-beta = <0>;
+};
+
+/* UART0 — delete RX pin to avoid floating-pin leakage in low-power builds */
+&uart0 {
+	status = "okay";
+	current-speed = <115200>;
+	/delete-property/ rx-pin;
+};

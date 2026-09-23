@@ -19,6 +19,12 @@
 #include <stdlib.h>   /* rand() */
 #include <string.h>
 #include "retry.h"
+/* sys_rand32_get() provides a hardware-backed random seed — better than
+ * k_uptime_get_32() which is near-zero on cold boot and identical across
+ * devices powered on simultaneously (defeats thundering-herd jitter). */
+#if defined(CONFIG_ENTROPY_HAS_DRIVER)
+#include <zephyr/random/random.h>
+#endif
 
 LOG_MODULE_REGISTER(retry, LOG_LEVEL_INF);
 
@@ -102,8 +108,16 @@ int retry_init(const struct retry_config *cfg)
         g_cfg.wdt_timeout_sec = cfg->wdt_timeout_sec;
     }
 
-    /* Seed jitter with uptime for different values each boot */
+    /* Seed jitter with hardware RNG XOR'd with uptime for maximum entropy.
+     * Pure uptime is near-zero on cold boot and identical across devices
+     * powered on at the same time (e.g. after a power outage) — this would
+     * cause all devices to produce the same backoff sequence, defeating the
+     * thundering-herd mitigation. */
+#if defined(CONFIG_ENTROPY_HAS_DRIVER)
+    srand(sys_rand32_get() ^ (unsigned int)k_uptime_get_32());
+#else
     srand((unsigned int)k_uptime_get_32());
+#endif
 
     return watchdog_init(g_cfg.wdt_timeout_sec);
 }
@@ -152,7 +166,13 @@ int retry_on_failure(void)
      */
     int remaining = wait_sec;
     while (remaining > 0) {
-        int chunk = MIN(remaining, (g_cfg.wdt_timeout_sec / 2));
+        /* Kick at most every (wdt_timeout / 2) seconds.
+         * Floor at 1s so chunk is never 0 (avoids infinite loop if
+         * wdt_timeout_sec is misconfigured to a very small value). */
+        int half_wdt = (g_cfg.wdt_timeout_sec > 1)
+                       ? (g_cfg.wdt_timeout_sec / 2)
+                       : 1;
+        int chunk = MIN(remaining, half_wdt);
         k_sleep(K_SECONDS(chunk));
         retry_kick_watchdog();
         remaining -= chunk;

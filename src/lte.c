@@ -142,7 +142,10 @@ static void lte_evt_handler(const struct lte_lc_evt *const evt)
         g_metrics.psm_tau_sec         = evt->psm_cfg.tau;
         g_metrics.psm_active_time_sec = evt->psm_cfg.active_time;
         if (evt->psm_cfg.active_time == -1) {
-            LOG_INF("PSM: network did not grant PSM (TAU=%ds)",
+            /* active_time=-1 means the network hasn't confirmed PSM yet —
+             * a second PSM_UPDATE with the real grant typically follows
+             * within 100-500ms (normal on AT&T LTE-M). */
+            LOG_DBG("PSM: pending network grant (TAU=%ds, active not yet set)",
                     evt->psm_cfg.tau);
         } else {
             LOG_INF("PSM granted: TAU=%ds, active=%ds",
@@ -187,14 +190,14 @@ int conexio_lte_connect(int timeout_sec)
     /* Record the start time for connect_time_ms calculation */
     g_connect_start_ms = k_uptime_get();
 
-    /* Register the persistent event handler (safe to call multiple times —
-     * lte_lc_register_handler is idempotent for the same function pointer) */
+    /* Register the persistent event handler once.
+     * lte_lc_connect_async() accepts a handler param but we pass NULL
+     * here since we already registered via lte_lc_register_handler().
+     * Passing the same function to both would register it twice,
+     * causing every LTE event to fire the handler twice. */
     lte_lc_register_handler(lte_evt_handler);
 
-    /* Start the modem asynchronously.
-     * NCS v3.2.1: lte_lc_init_and_connect_async() was removed; use
-     * lte_lc_connect_async() which implicitly initialises on first call. */
-    int ret = lte_lc_connect_async(lte_evt_handler);
+    int ret = lte_lc_connect_async(NULL);
     if (ret) {
         LOG_ERR("lte_lc_connect_async failed (%d)", ret);
         return ret;

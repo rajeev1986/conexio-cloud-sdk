@@ -1,0 +1,72 @@
+mainmenu "Conexio Stratus AWS Fleet Provisioning"
+
+config STRATUS_AWS_ENDPOINT
+	string "Conexio Cloud MQTT broker hostname"
+	default "mqtt.cloud.conexiotech.com"
+	help
+	  Conexio Cloud MQTT endpoint (port 8883, TLS mutual auth).
+	  Used for both fleet provisioning and normal telemetry operation.
+	  Do not change unless self-hosting on a different AWS account.
+
+config STRATUS_FLEET_TEMPLATE
+	string "AWS IoT Fleet Provisioning template name"
+	default "ConexioFleetTemplate"
+	help
+	  AWS IoT Fleet Provisioning template to use.
+	  Production:  "ConexioFleetTemplate"
+	  Development: "ConexioFleetTemplate-dev"
+	  Staging:     "ConexioFleetTemplate-staging"
+	  Override in prj.conf for non-production builds.
+
+config STRATUS_TELEMETRY_INTERVAL_SEC
+	int "Telemetry publish interval (seconds)"
+	default 60
+	range 10 3600
+
+config STRATUS_MQTT_KEEPALIVE
+	int "MQTT keepalive interval (seconds)"
+	default 60
+	range 30 600
+
+# ── Modem TLS security tags ───────────────────────────────────────────────────
+# Claim creds (10-12): embedded bootstrap — shared across all devices.
+# Device creds (100-102): issued by AWS per-device during provisioning.
+#   These MUST match CONFIG_CONEXIO_CLOUD_CA_TAG / CERT_TAG / KEY_TAG
+#   in the main SDK (src/cert_store.c) so the app sample can find them
+#   after flashing over the provisioning sample.
+
+config STRATUS_CLAIM_CA_TAG
+	int "TLS tag: Root CA for claim phase"
+	default 10
+
+config STRATUS_CLAIM_CERT_TAG
+	int "TLS tag: Claim certificate"
+	default 11
+
+config STRATUS_CLAIM_KEY_TAG
+	int "TLS tag: Claim private key"
+	default 12
+
+config STRATUS_DEVICE_CA_TAG
+	int "TLS tag: Root CA for device phase"
+	default 100
+
+config STRATUS_DEVICE_CERT_TAG
+	int "TLS tag: Device certificate (issued by AWS)"
+	default 101
+
+config STRATUS_DEVICE_KEY_TAG
+	int "TLS tag: Device private key (issued by AWS)"
+	default 102
+
+config STRATUS_FORCE_REPROVISION
+	bool "Force re-provisioning on next boot (developer escape hatch)"
+	default n
+	help
+	  When enabled, clears all device credentials and the provisioning NVS
+	  flag on the next boot, forcing a full re-provisioning cycle.
+	  Use this to recover from a mismatched cert/key state.
+	  Set to y in prj.conf, flash once, then remove and flash again.
+	  NEVER enable in production builds.
+
+source "Kconfig.zephyr"

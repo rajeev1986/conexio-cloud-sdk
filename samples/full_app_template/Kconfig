@@ -1,0 +1,36 @@
+mainmenu "Conexio Advanced Sample App"
+
+# All production-grade feature configuration (PSM, FOTA, offline buffer,
+# retry/watchdog) is defined in conexio-cloud-sdk/Kconfig under the
+# CONFIG_CONEXIO_CLOUD_* namespace. Configure features via prj.conf.
+
+config CONEXIO_SAMPLE_SIMULATED_SENSORS
+	bool "Use simulated (random) sensor data"
+	default y
+	help
+	  When enabled (default), temperature and humidity callbacks return
+	  random values for demonstration purposes. A compiler warning is
+	  emitted to prevent accidental production builds with fake data.
+
+	  Set to n (CONFIG_CONEXIO_SAMPLE_SIMULATED_SENSORS=n in prj.conf)
+	  and implement the real sensor reads in main.c before deploying
+	  to production hardware.
+
+config CELL_LOCATION
+	bool "Enable cellular location for AWS Location Service"
+	default n
+	select LTE_LC_NEIGHBOR_CELL_MEAS_MODULE
+	help
+	  Enables AT%NCELLMEAS neighbor cell measurement and publishes the
+	  results as telemetry metrics (_loc_mcc, _loc_mnc, _loc_cell_id,
+	  _loc_tac, _loc_earfcn, _loc_rsrp, _loc_timing_adv, _loc_neighbors).
+
+	  The cloud Lambda uses these metrics to call a positioning solver
+	  (HERE / Combain) and update an AWS Location Tracker resource.
+	  No positioning runs on the device — the firmware only collects
+	  raw cell data.
+
+	  Requires LTE_LC_NEIGHBOR_CELL_MEAS_MODULE (auto-selected).
+	  Add CONFIG_CELL_LOCATION=y to prj.conf to enable.
+
+source "Kconfig.zephyr"
