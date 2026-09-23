@@ -1,4 +1,10 @@
 /*
+ * Copyright (c) 2026 Conexio Technologies, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
  * conexio_cloud.c — Conexio Cloud SDK core (Phase 2)
  *
  * ┌─────────────────────────────────────────────────────────────────────────┐

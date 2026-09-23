@@ -1,4 +1,10 @@
 /*
+ * Copyright (c) 2026 Conexio Technologies, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
  * main.c — Conexio Advanced Sample Application
  *
  * nRF Connect SDK v3.2.1 / nRF91xx

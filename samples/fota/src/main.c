@@ -1,4 +1,10 @@
 /*
+ * Copyright (c) 2026 Conexio Technologies, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
  * fota/src/main.c — Firmware Over-the-Air (FOTA) update sample.
  *
  * Demonstrates setting up and handling OTA firmware updates delivered via

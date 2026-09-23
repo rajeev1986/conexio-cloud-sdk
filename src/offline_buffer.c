@@ -1,4 +1,10 @@
 /*
+ * Copyright (c) 2026 Conexio Technologies, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
  * offline_buffer.c — Flash-backed ring buffer for offline telemetry
  *
  * Uses Zephyr NVS (Non-Volatile Storage) to persist payloads in flash.

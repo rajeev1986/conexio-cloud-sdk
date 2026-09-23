@@ -1,3 +1,9 @@
+/*
+ * Copyright (c) 2026 Conexio Technologies, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 /**
  * transport.h — Internal transport interface (Phase 2, private to SDK)
  *

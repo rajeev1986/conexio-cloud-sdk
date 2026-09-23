@@ -1,4 +1,10 @@
 /*
+ * Copyright (c) 2026 Conexio Technologies, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
  * fuel_gauge.c — nPM13xx / nRF Fuel Gauge SDK integration
  *
  * ── Architecture (NAN-045 compliant) ──────────────────────────────────────

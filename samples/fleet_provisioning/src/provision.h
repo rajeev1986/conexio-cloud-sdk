@@ -1,3 +1,9 @@
+/*
+ * Copyright (c) 2026 Conexio Technologies, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #ifndef PROVISION_H
 #define PROVISION_H
 

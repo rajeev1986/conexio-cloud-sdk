@@ -1,4 +1,10 @@
 /*
+ * Copyright (c) 2026 Conexio Technologies, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
  * device_settings/src/main.c — OTA Config (device settings) sample.
  *
  * Device Settings (OTA Config) allow the Conexio Console to push JSON

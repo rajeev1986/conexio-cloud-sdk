@@ -1,4 +1,10 @@
 /*
+ * Copyright (c) 2026 Conexio Technologies, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
  * mqtt_transport.c — MQTT/TLS transport backend (Phase 2)
  *
  * Implements the internal transport interface (transport.h) for MQTT.

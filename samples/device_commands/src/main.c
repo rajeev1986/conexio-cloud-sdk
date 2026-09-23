@@ -1,4 +1,10 @@
 /*
+ * Copyright (c) 2026 Conexio Technologies, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
  * device_commands/src/main.c — Cloud device commands sample.
  *
  * Demonstrates handling commands sent from the Conexio Console to the device.

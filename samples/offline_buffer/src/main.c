@@ -1,4 +1,10 @@
 /*
+ * Copyright (c) 2026 Conexio Technologies, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
  * offline_buffer/src/main.c — Offline telemetry buffering sample.
  *
  * Demonstrates how the Conexio Cloud SDK automatically buffers telemetry

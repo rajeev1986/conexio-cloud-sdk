@@ -1,4 +1,10 @@
 /*
+ * Copyright (c) 2026 Conexio Technologies, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
  * retry.c — Exponential backoff retry + hardware watchdog
  *
  * Exponential backoff prevents "thundering herd" — if many devices lose

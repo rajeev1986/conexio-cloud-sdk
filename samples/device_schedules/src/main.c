@@ -1,4 +1,10 @@
 /*
+ * Copyright (c) 2026 Conexio Technologies, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
  * device_schedules/src/main.c — Device Schedules sample.
  *
  * Device Schedules allow the Conexio Console to send two timed commands to

@@ -1,4 +1,10 @@
 /*
+ * Copyright (c) 2026 Conexio Technologies, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
  * http_transport.c — HTTPS POST transport backend (Phase 2)
  *
  * Implements the internal transport interface (transport.h) for HTTP.

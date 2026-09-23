@@ -1,4 +1,10 @@
 /*
+ * Copyright (c) 2026 Conexio Technologies, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
  * sensor_data/src/main.c — Sensor data streaming sample.
  *
  * Demonstrates fetching sensor readings (temperature, humidity) and

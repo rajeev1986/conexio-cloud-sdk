@@ -1,4 +1,10 @@
 /*
+ * Copyright (c) 2026 Conexio Technologies, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
  * provision.c — AWS IoT Fleet Provisioning via CreateCertificateFromCsr
  * NCS v3.2.1 / nRF9151
  *

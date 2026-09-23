@@ -1,4 +1,10 @@
 /*
+ * Copyright (c) 2026 Conexio Technologies, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
  * main.c — Conexio Stratus AWS Fleet Provisioning
  * NCS v3.2.1 / nRF9151
  *

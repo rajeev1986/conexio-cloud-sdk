@@ -1,3 +1,9 @@
+/*
+ * Copyright (c) 2026 Conexio Technologies, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 /**
  * @file conexio_cloud.h
  * @brief Conexio Cloud SDK — public API (umbrella header)

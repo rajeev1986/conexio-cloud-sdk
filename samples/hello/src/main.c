@@ -1,4 +1,10 @@
 /*
+ * Copyright (c) 2026 Conexio Technologies, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
  * hello/src/main.c — Minimal Conexio Cloud SDK sample.
  *
  * Demonstrates the absolute minimum needed to connect a Conexio Stratus Pro

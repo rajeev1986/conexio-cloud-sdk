@@ -1,4 +1,10 @@
 /*
+ * Copyright (c) 2026 Conexio Technologies, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
  * fuel_gauge.h — nPM13xx fuel gauge internal SDK header
  *
  * Provides battery voltage (mV), state-of-charge (%), and drain rate

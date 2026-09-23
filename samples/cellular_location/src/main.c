@@ -1,4 +1,10 @@
 /*
+ * Copyright (c) 2026 Conexio Technologies, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
  * cellular_location/src/main.c — Cell-based location sample.
  *
  * Demonstrates gathering neighboring cell measurements (AT%NCELLMEAS) and

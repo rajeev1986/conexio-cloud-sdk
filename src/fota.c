@@ -1,4 +1,10 @@
 /*
+ * Copyright (c) 2026 Conexio Technologies, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
  * fota.c — Firmware Over-the-Air update via AWS IoT Jobs + MCUboot
  *
  * Integrates with the Conexio Console dashboard Firmware page:

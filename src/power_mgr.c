@@ -1,4 +1,10 @@
 /*
+ * Copyright (c) 2026 Conexio Technologies, Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
  * power_mgr.c — LTE PSM / eDRX power management
  *
  * Negotiates Power Saving Mode (PSM) or extended Discontinuous Reception
