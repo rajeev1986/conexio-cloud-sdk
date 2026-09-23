@@ -17,7 +17,7 @@ Each sample demonstrates one specific feature of the Conexio Cloud SDK.
 | [`cellular_location/`](cellular_location/) | AT%NCELLMEAS cell-based positioning | ⭐⭐ Intermediate |
 | [`offline_buffer/`](offline_buffer/) | Flash-backed buffering during outages | ⭐⭐ Intermediate |
 | [`fota/`](fota/) | Over-the-air firmware updates | ⭐⭐⭐ Advanced |
-| [`app/`](app/) | All features combined — production template | ⭐⭐⭐ Advanced |
+| [`full_app_template/`](full_app_template/) | All features combined — production template | ⭐⭐⭐ Advanced |
 
 ---
 
