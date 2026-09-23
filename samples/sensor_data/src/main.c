@@ -137,7 +137,9 @@ int main(void)
 
     /* Initialise: LTE → NTP → TLS → MQTT thread */
     int ret = conexio_cloud_init(on_cloud_event);
-    if (ret) { LOG_ERR("init failed (%d)", ret); return -1; }
+    if (ret) { 
+        LOG_ERR("init failed (%d)", ret); return -1; 
+    }
 
     LOG_INF("Connecting...");
     if (conexio_cloud_wait_connected(60000) == 0) {
