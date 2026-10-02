@@ -2,7 +2,7 @@
  * cbor_encoder.h — Conexio Cloud SDK CBOR encoding helpers
  *
  * Copyright (c) 2026 Conexio Technologies, Inc
- * SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
+ * SPDX-License-Identifier: Apache-2.0
  *
  * Thin chainable wrapper around Zephyr's zcbor library (already present in
  * nRF Connect SDK — no extra dependencies required).
