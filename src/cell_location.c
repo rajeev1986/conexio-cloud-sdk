@@ -326,8 +326,6 @@ void cell_location_advance_seconds(uint32_t seconds)
 		cell_location_request();
 	}
 }
-	}
-}
 
 bool cell_location_is_busy(void)
 {
