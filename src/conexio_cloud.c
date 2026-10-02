@@ -621,8 +621,13 @@ static int g_sdk_interval_sec = CONFIG_CONEXIO_CLOUD_INTERVAL_SEC;
  * attempting to reconnect — if set, it sleeps for the remaining publish
  * interval before reconnecting, allowing the modem to enter PSM sleep.
  * Without this gate the thread reconnects within milliseconds, keeping the
- * modem active for the entire interval and consuming ~26 mA continuously. */
-static bool g_psm_sleep_pending = false;
+ * modem active for the entire interval and consuming ~26 mA continuously.
+ *
+ * volatile: written by sdk_internal_event_handler (can be called from main()
+ * for the boot publish) and read by cloud_thread_fn on a different thread.
+ * On ARM Cortex-M33 single-byte writes are atomic, but volatile prevents the
+ * compiler from caching the value across loop iterations in cloud_thread_fn. */
+static volatile bool g_psm_sleep_pending = false;
 #endif
 
 /* Application-configurable interval limits.
@@ -2781,8 +2786,17 @@ static void cloud_thread_fn(void *a, void *b, void *c)
 #endif /* CONFIG_CONEXIO_CLOUD_PSM */
             int ret = transport_connect();
             if (ret) {
-                LOG_WRN("transport_connect failed (%d) — retrying in 10 s", ret);
+                LOG_WRN("transport_connect failed (%d)", ret);
+#if defined(CONFIG_CONEXIO_CLOUD_RETRY)
+                /* Count the failure. retry_on_failure() applies exponential
+                 * backoff sleep (with WDT kicks) and reboots after
+                 * CONFIG_CONEXIO_CLOUD_RETRY_MAX_ATTEMPTS consecutive failures.
+                 * Without this, a stuck modem after PSM wake-up would loop
+                 * forever kicking the WDT, never recovering via reboot. */
+                retry_on_failure();
+#else
                 k_sleep(K_SECONDS(10));
+#endif
                 continue;
             }
             /* Drain the socket immediately after reconnect — AWS IoT Core
