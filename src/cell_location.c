@@ -311,6 +311,24 @@ void cell_location_tick(void)
 	}
 }
 
+void cell_location_advance_seconds(uint32_t seconds)
+{
+	if (!g_initialised || g_measurement_active || seconds == 0) {
+		return;
+	}
+
+	g_tick_counter += seconds;
+
+	if (g_tick_counter >= (uint32_t)CONFIG_CELL_LOCATION_INTERVAL_SEC) {
+		g_tick_counter = 0;
+		LOG_DBG("cell_location: interval elapsed (%u s advance) — requesting measurement",
+			seconds);
+		cell_location_request();
+	}
+}
+	}
+}
+
 bool cell_location_is_busy(void)
 {
 	return g_measurement_active;

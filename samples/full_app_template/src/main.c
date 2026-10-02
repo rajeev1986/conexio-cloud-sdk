@@ -502,11 +502,11 @@ int main(void)
         k_sleep(K_SECONDS(CONFIG_CONEXIO_CLOUD_INTERVAL_SEC));
 
 #if defined(CONFIG_CELL_LOCATION)
-        /* Advance cell location counter by the full interval in one shot.
-         * Equivalent to 1-tick/second over the full sleep period.     */
-        for (int i = 0; i < CONFIG_CONEXIO_CLOUD_INTERVAL_SEC; i++) {
-            cell_location_tick();
-        }
+        /* Advance cell location counter by the elapsed interval in one call.
+         * cell_location_advance_seconds() adds the value directly to the
+         * internal tick counter — O(1) vs the O(n) loop that calling
+         * cell_location_tick() INTERVAL_SEC times would require.        */
+        cell_location_advance_seconds(CONFIG_CONEXIO_CLOUD_INTERVAL_SEC);
 #endif /* CONFIG_CELL_LOCATION */
 
 #endif /* CONFIG_SERIAL */

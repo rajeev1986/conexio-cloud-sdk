@@ -106,6 +106,23 @@ int cell_location_request(void);
 void cell_location_tick(void);
 
 /**
+ * @brief Advance the location interval counter by multiple seconds at once.
+ *
+ * Equivalent to calling cell_location_tick() @p seconds times, but without
+ * the O(n) loop overhead. Use this instead of a loop after a long sleep:
+ *
+ * @code
+ *   k_sleep(K_SECONDS(sleep_sec));
+ *   cell_location_advance_seconds(sleep_sec);  // O(1), not O(sleep_sec)
+ * @endcode
+ *
+ * Fires cell_location_request() if the interval has elapsed.
+ *
+ * @param seconds  Number of seconds that have elapsed since the last call.
+ */
+void cell_location_advance_seconds(uint32_t seconds);
+
+/**
  * @brief Returns true if a neighbour cell measurement is currently in progress.
  */
 bool cell_location_is_busy(void);
