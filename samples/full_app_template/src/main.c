@@ -466,9 +466,23 @@ int main(void)
      *   - allow SET_INTERVAL / telemetryIntervalSec to take effect fast
      *   - call cell_location_tick() to drive the location interval
      *
-     * Uses 5-second sleep so interval changes take effect within 5s
-     * instead of waiting out the full current publish interval.       */
+     * Two sleep modes controlled by whether UART is enabled:
+     *
+     *   Debug builds (CONFIG_SERIAL=y, default prj.conf):
+     *     5-second sleep — interval changes are responsive, useful during
+     *     development. Higher CPU wake frequency is acceptable.
+     *
+     *   Low-power builds (CONFIG_SERIAL=n, built with low_power.conf):
+     *     Full-interval sleep — CPU stays asleep for the entire publish
+     *     interval instead of waking every 5 s. While the modem is in
+     *     µA PSM sleep, the CPU waking at 5 s draws ~4-8 mA per cycle
+     *     and prevents the device from ever reaching tens-of-µA total.
+     *     Cell location ticks advance the full interval in one burst on
+     *     wake — mathematically equivalent to the 1-per-second approach
+     *     used in the debug path.                                      */
     while (1) {
+#if defined(CONFIG_SERIAL)
+        /* Debug / development build — responsive 5 s sleep */
         k_sleep(K_SECONDS(5));
 
 #if defined(CONFIG_CELL_LOCATION)
@@ -479,7 +493,23 @@ int main(void)
         for (int i = 0; i < 5; i++) {
             cell_location_tick();
         }
-#endif
+#endif /* CONFIG_CELL_LOCATION */
+
+#else  /* !CONFIG_SERIAL — low-power build with low_power.conf */
+        /* Low-power build — sleep for the full publish interval.
+         * Prevents the CPU from waking every 5 s and consuming ~4-8 mA
+         * while the modem is in µA PSM sleep.                         */
+        k_sleep(K_SECONDS(CONFIG_CONEXIO_CLOUD_INTERVAL_SEC));
+
+#if defined(CONFIG_CELL_LOCATION)
+        /* Advance cell location counter by the full interval in one shot.
+         * Equivalent to 1-tick/second over the full sleep period.     */
+        for (int i = 0; i < CONFIG_CONEXIO_CLOUD_INTERVAL_SEC; i++) {
+            cell_location_tick();
+        }
+#endif /* CONFIG_CELL_LOCATION */
+
+#endif /* CONFIG_SERIAL */
     }
 
     return 0;
