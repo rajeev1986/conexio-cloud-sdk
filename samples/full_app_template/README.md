@@ -563,26 +563,63 @@ instructions.
 The modem enters µA-level sleep between transmissions.
 
 ```
-TAU timer  (T3412) = 7200s = 2h  → network keepalive interval
-Active time (T3324) = 30s        → window to connect + publish + sleep
+TAU timer  (T3412) = 3600s = 1h  → network keepalive interval (prj.conf default)
+Active time (T3324) = 10s        → window to connect + publish + sleep
 ```
 
-The actual negotiated values are reported back by the network and published
-as `_psm_tau_sec` and `_psm_active_sec` on boot.
+The actual negotiated values are granted by the network and published as
+`_psm_tau_sec` and `_psm_active_sec` on boot. Carriers impose their own
+minimums — AT&T LTE-M typically grants T3324 ≥ 30s and TAU ≥ 3.5h on Band 13
+regardless of what the device requests.
+
+### Measured PSM Sleep Current — Conexio Stratus Pro (nRF9151)
+
+Measured with Nordic nRF PPK2 power profiler on production firmware built with
+`low_power.conf`. Conditions: PSM sleep active, UART disabled, all peripherals idle.
+
+| Component | Measured current |
+|---|---|
+| nRF9151 modem (PSM sleep) | ~2.5 µA |
+| nPM1300 PMIC (quiescent) | ~0.8 µA |
+| **Board total** | **~3.3 µA** |
+
+The `CONFIG_CONEXIO_FUEL_GAUGE_PSM_SLEEP_CURRENT_UA=4` setting in `prj.conf` is
+calibrated from this measurement. The nRF Fuel Gauge library uses this value to
+integrate coulombs during PSM sleep without any CPU wake-ups, keeping `_batt_soc`
+and `_batt_drain_hr` accurate across long sleep windows.
+
+> Using 4 µA (vs the measured 3.3 µA) provides a conservative margin for
+> unit-to-unit variation and temperature drift while remaining close to the real value.
+
+### Typical Current Profile (3600s interval, PSM enabled)
+
+| Phase | Typical duration | Typical current | Notes |
+|---|---|---|---|
+| LTE attach + MQTT connect | ~8–15 s | ~50–110 mA | Peaks at attach |
+| Telemetry publish (MQTT) | ~1–3 s | ~50–100 mA | QoS 1 PUBACK wait |
+| AT%NCELLMEAS (if enabled) | ~1–5 s | ~30–50 mA | Extended Light scan |
+| T3324 active window | ~30–60 s | ~5–15 mA | Network-granted; RRC idle until PSM |
+| **PSM sleep** | remainder of interval | **~3.3 µA** | Measured on Stratus Pro |
 
 ### Main Loop Sleep
 
-The main loop sleeps in 5-second increments. This lets `SET_INTERVAL` or
-`telemetryIntervalSec` OTA Config changes take effect within 5 seconds
-rather than waiting out the full current interval.
+In low-power builds (`low_power.conf`, `CONFIG_SERIAL=n`) the main loop sleeps for
+the full `CONFIG_CONEXIO_CLOUD_INTERVAL_SEC` between wakes. In debug builds
+(`CONFIG_SERIAL=y`) it sleeps in 5-second increments so `SET_INTERVAL` and
+`telemetryIntervalSec` OTA Config changes take effect quickly.
 
-### Typical Current Profile (60s interval, PSM enabled)
+### Estimated Battery Life
 
-| Phase | Duration | Current |
-|-------|----------|---------|
-| LTE attach + publish | ~10–15s | ~70–100 mA |
-| AT%NCELLMEAS (if enabled) | ~1–5s | ~30–50 mA |
-| PSM sleep | remainder of 60s | ~2–5 µA |
+Using a 1000 mAh LiPo battery at 3600s (1h) publish interval with PSM enabled:
+
+| Interval | Avg current (est.) | Battery life (est.) |
+|---|---|---|
+| 3600 s (1h) | ~0.5–1 mA | ~1–2 months |
+| 7200 s (2h) | ~0.3–0.6 mA | ~2–4 months |
+| 86400 s (1 day) | < 0.1 mA | ~12+ months |
+
+> Actual life depends on network attach time, carrier-granted PSM timers, and
+> temperature. These figures assume a clean single-attach cycle per interval.
 
 ---
 
