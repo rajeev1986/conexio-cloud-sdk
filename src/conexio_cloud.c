@@ -2747,7 +2747,35 @@ static void cloud_thread_fn(void *a, void *b, void *c)
                     LOG_DBG("PSM: sleeping %d s before reconnect "
                             "(interval=%d elapsed=%lld)",
                             sleep_sec, g_sdk_interval_sec, elapsed_sec);
+                    /*
+                     * Sleep in watchdog-safe chunks.
+                     *
+                     * A single k_sleep(sleep_sec) would stall the thread for up
+                     * to INTERVAL_SEC (e.g. 3600 s) without calling
+                     * retry_kick_watchdog(). The hardware WDT fires after
+                     * CONFIG_CONEXIO_CLOUD_WATCHDOG_TIMEOUT_SEC (default 600 s)
+                     * without a feed → spurious reboot mid-sleep with
+                     * _reboot_reason = "watchdog".
+                     *
+                     * Fix: sleep in chunks of half the WDT timeout, kicking the
+                     * watchdog between each chunk. retry.c uses the same pattern
+                     * for its own backoff sleeps.
+                     */
+#if defined(CONFIG_CONEXIO_CLOUD_RETRY)
+                    {
+                        const int kick_sec = CONFIG_CONEXIO_CLOUD_WATCHDOG_TIMEOUT_SEC / 2;
+                        int remaining = sleep_sec;
+                        while (remaining > 0) {
+                            int chunk = (remaining < kick_sec) ? remaining : kick_sec;
+                            k_sleep(K_SECONDS(chunk));
+                            remaining -= chunk;
+                            retry_kick_watchdog();
+                        }
+                    }
+#else
+                    /* No watchdog — plain sleep is fine */
                     k_sleep(K_SECONDS(sleep_sec));
+#endif
                 }
             }
 #endif /* CONFIG_CONEXIO_CLOUD_PSM */
