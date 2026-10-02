@@ -716,11 +716,27 @@ int transport_connect(void)
 
 /* transport_disconnect — close the MQTT session gracefully.
  * NCS v3.2.1: mqtt_disconnect() takes a second arg (disconnect params).
- * Pass NULL for a normal disconnect with no reason code. */
+ * Pass NULL for a normal disconnect with no reason code.
+ *
+ * IMPORTANT: mqtt_disconnect() only sends the MQTT DISCONNECT packet.
+ * It does NOT close the underlying TLS/TCP socket — the socket fd remains
+ * open and the modem keeps the RRC connection alive to maintain it.
+ * Without an explicit zsock_close() the modem never sees the TCP session
+ * end, T3324 never starts, and PSM is never entered (device stays at ~26 mA).
+ */
 int transport_disconnect(void)
 {
+    int sock = client.transport.tls.sock;
     connected = false;
-    return mqtt_disconnect(&client, NULL);
+    mqtt_disconnect(&client, NULL);
+    /* Explicitly close the TLS/TCP socket so the modem can release the RRC
+     * connection and enter PSM sleep. mqtt_disconnect() leaves the socket
+     * open — zsock_close() is required to trigger TCP FIN and RRC release. */
+    if (sock >= 0) {
+        zsock_close(sock);
+        client.transport.tls.sock = -1;
+    }
+    return 0;
 }
 
 /* transport_is_connected — returns current connection state */

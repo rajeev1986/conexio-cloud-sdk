@@ -615,6 +615,16 @@ static uint32_t g_reboot_cnt = 0;
 /* SET_INTERVAL — updates the SDK-managed publish interval */
 static int g_sdk_interval_sec = CONFIG_CONEXIO_CLOUD_INTERVAL_SEC;
 
+#if defined(CONFIG_CONEXIO_CLOUD_PSM)
+/* Set to true in the PUBLISHED handler when transport_disconnect() is called
+ * intentionally for PSM sleep. The cloud thread checks this flag before
+ * attempting to reconnect — if set, it sleeps for the remaining publish
+ * interval before reconnecting, allowing the modem to enter PSM sleep.
+ * Without this gate the thread reconnects within milliseconds, keeping the
+ * modem active for the entire interval and consuming ~26 mA continuously. */
+static bool g_psm_sleep_pending = false;
+#endif
+
 /* Application-configurable interval limits.
  * Set via conexio_cloud_register_interval() before init.
  * Defaults: min=10s, max=INT_MAX (no upper cap). */
@@ -1182,6 +1192,7 @@ static void sdk_internal_event_handler(const struct conexio_cloud_event *evt)
             retry_on_success();
 #endif
             transport_disconnect();
+            g_psm_sleep_pending = true;   /* gate cloud thread reconnect */
         }
         power_mgr_sleep();
 #endif
@@ -2701,15 +2712,45 @@ static void cloud_thread_fn(void *a, void *b, void *c)
 #endif
 
 #if defined(CONFIG_CONEXIO_CLOUD_PSM)
-        /* PSM sleep is automatic — the modem enters sleep after the T3324
-         * active timer expires (~30s after our intentional disconnect).
-         * transport_connect() wakes the modem when the interval timer fires.
-         * No explicit wake wait needed — the modem radio comes up as part
-         * of the TLS/MQTT connect sequence. */
+        /* After an intentional PSM disconnect, g_psm_sleep_pending is set.
+         * The reconnect block below will sleep for the remaining interval
+         * before calling transport_connect(). This gives the modem time to
+         * enter PSM sleep after the TCP socket is closed. */
 #endif
 
         /* ── Reconnect if needed ──────────────────────────────────────── */
         if (!transport_is_connected()) {
+#if defined(CONFIG_CONEXIO_CLOUD_PSM)
+            /* PSM sleep gate: after an intentional PSM disconnect, sleep for
+             * the remaining publish interval before reconnecting.
+             *
+             * Without this, the thread reconnects within ~1 ms of disconnect,
+             * keeping the modem in active mode for the entire interval and
+             * consuming ~26 mA. With the sleep:
+             *   1. TCP socket is now closed (transport_disconnect fix)
+             *   2. Modem releases RRC → T3324 starts → PSM entered (~µA)
+             *   3. Thread sleeps here for the interval
+             *   4. Thread wakes → transport_connect() → modem exits PSM →
+             *      LTE re-registers → MQTT connects → publish → repeat
+             *
+             * Elapsed time accounts for the time already spent connecting and
+             * publishing so the device wakes on the correct schedule even if
+             * the LTE attach took 15-20 seconds on this cycle. */
+            if (g_psm_sleep_pending) {
+                g_psm_sleep_pending = false;
+                int64_t elapsed_sec = (k_uptime_get() - last_publish_ms) / 1000;
+                int sleep_sec = g_sdk_interval_sec - (int)elapsed_sec;
+                if (sleep_sec < 0) {
+                    sleep_sec = 0;
+                }
+                if (sleep_sec > 5) {
+                    LOG_DBG("PSM: sleeping %d s before reconnect "
+                            "(interval=%d elapsed=%lld)",
+                            sleep_sec, g_sdk_interval_sec, elapsed_sec);
+                    k_sleep(K_SECONDS(sleep_sec));
+                }
+            }
+#endif /* CONFIG_CONEXIO_CLOUD_PSM */
             int ret = transport_connect();
             if (ret) {
                 LOG_WRN("transport_connect failed (%d) — retrying in 10 s", ret);
