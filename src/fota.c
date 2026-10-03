@@ -56,8 +56,9 @@ LOG_MODULE_REGISTER(fota, LOG_LEVEL_INF);
 
 static fota_event_cb_t  g_cb            = NULL;
 static bool             g_fota_active   = false;
-static char             g_device_id[32] = {0};
+static char             g_device_id[32]      = {0};
 static char             g_current_job_id[64] = {0};
+static char             g_target_version[32] = {0};  /* target fw version from job doc */
 
 /* ── Maintenance window / pause callback ──────────────────────────────────
  * When set, execute_job() waits until this returns true before starting
@@ -93,7 +94,7 @@ void fota_set_can_start_cb(fota_can_start_cb_t cb)
  *   0x0010–0x0012, 0x2000+ offline buffer
  */
 #define FOTA_PENDING_NVS_ID  0x0007U
-#define FOTA_PENDING_MAX     98U    /* device_id(31) + '\n'(1) + job_id(63) + '\0'(1) + margin */
+#define FOTA_PENDING_MAX     112U   /* device_id(31)+'\n'(1)+job_id(63)+'\n'(1)+version(15)+'\0'(1) */
 
 /* NVS key 0x0008 — stores the last successfully installed firmware version.
  * Written by fota_confirm() after MCUboot confirmation. Read by execute_job()
@@ -132,20 +133,27 @@ static int fota_nvs_init(void)
     return 0;
 }
 
-/* Persist "<device_id>\n<job_id>" to NVS so SUCCEEDED can be sent after reboot */
-static void fota_pending_save(const char *device_id, const char *job_id)
+/* Persist "<device_id>\n<job_id>\n<target_version>" to NVS.
+ * The target_version field is used after reboot to detect MCUboot rollback:
+ * if the running firmware version != target_version the flash did not succeed. */
+static void fota_pending_save(const char *device_id, const char *job_id,
+                               const char *target_version)
 {
     if (fota_nvs_init() != 0) return;
     char buf[FOTA_PENDING_MAX];
-    int len = snprintf(buf, sizeof(buf), "%s\n%s", device_id, job_id);
+    int len = snprintf(buf, sizeof(buf), "%s\n%s\n%s",
+                       device_id, job_id,
+                       target_version ? target_version : "");
     if (len < 0 || len >= (int)sizeof(buf)) return;
     nvs_write(&g_fota_nvs, FOTA_PENDING_NVS_ID, buf, (uint16_t)(len + 1));
-    LOG_INF("FOTA: pending SUCCEEDED saved for job %s", job_id);
+    LOG_INF("FOTA: pending SUCCEEDED saved for job %s (target v%s)",
+            job_id, target_version ? target_version : "?");
 }
 
 /* Load and clear pending job from NVS. Returns true if a pending job was found. */
 static bool fota_pending_load(char *device_id_out, size_t dev_size,
-                               char *job_id_out,    size_t job_size)
+                               char *job_id_out,    size_t job_size,
+                               char *target_ver_out, size_t ver_size)
 {
     if (fota_nvs_init() != 0) return false;
     char buf[FOTA_PENDING_MAX];
@@ -153,14 +161,26 @@ static bool fota_pending_load(char *device_id_out, size_t dev_size,
     if (rc <= 0) return false;
     buf[sizeof(buf) - 1] = '\0';
 
-    /* Split on '\n' */
-    char *sep = strchr(buf, '\n');
-    if (!sep) return false;
-    *sep = '\0';
-    strncpy(device_id_out, buf,    dev_size - 1);
-    strncpy(job_id_out,    sep+1,  job_size - 1);
+    /* Split on first '\n' → device_id */
+    char *sep1 = strchr(buf, '\n');
+    if (!sep1) return false;
+    *sep1 = '\0';
+    strncpy(device_id_out, buf, dev_size - 1);
     device_id_out[dev_size - 1] = '\0';
-    job_id_out[job_size - 1]    = '\0';
+
+    /* Split on second '\n' → job_id and optional target_version */
+    char *sep2 = strchr(sep1 + 1, '\n');
+    if (sep2) {
+        *sep2 = '\0';
+        strncpy(job_id_out, sep1 + 1, job_size - 1);
+        strncpy(target_ver_out, sep2 + 1, ver_size - 1);
+    } else {
+        strncpy(job_id_out, sep1 + 1, job_size - 1);
+        if (target_ver_out && ver_size > 0) target_ver_out[0] = '\0';
+    }
+    job_id_out[job_size - 1]        = '\0';
+    if (target_ver_out) target_ver_out[ver_size - 1] = '\0';
+
     return (device_id_out[0] != '\0' && job_id_out[0] != '\0');
 }
 
@@ -259,7 +279,7 @@ static void fota_download_handler(const struct fota_download_evt *evt)
          * After the reboot into new firmware RAM is cleared — fota_confirm() on the
          * new firmware reads this NVS record and publishes SUCCEEDED on MQTT connect. */
         if (g_device_id[0] && g_current_job_id[0]) {
-            fota_pending_save(g_device_id, g_current_job_id);
+            fota_pending_save(g_device_id, g_current_job_id, g_target_version);
         }
         app_evt.type = FOTA_EVT_COMPLETE;
         g_cb(&app_evt);
@@ -382,6 +402,7 @@ static int execute_job(const char *job_id, const char *job_document)
     }
 
     strncpy(g_current_job_id, job_id, sizeof(g_current_job_id) - 1);
+    strncpy(g_target_version, version ? version : "", sizeof(g_target_version) - 1);
     g_fota_active = true;
 
     struct fota_event start_evt = { .type = FOTA_EVT_STARTED };
@@ -549,8 +570,38 @@ int fota_check_and_execute(void)
      * published here on the first MQTT CONNACK of the new firmware. */
     char pending_dev[32] = {0};
     char pending_job[64] = {0};
+    char pending_ver[32] = {0};
     if (fota_pending_load(pending_dev, sizeof(pending_dev),
-                          pending_job, sizeof(pending_job))) {
+                          pending_job, sizeof(pending_job),
+                          pending_ver, sizeof(pending_ver))) {
+
+        /* ── Rollback detection ───────────────────────────────────────────
+         * The pending record stores the version that was flashed. If the
+         * currently running firmware version does NOT match that target, then
+         * MCUboot rolled back (the new firmware crashed before confirming).
+         * Publish FAILED so the cloud marks the job failed and stops resending
+         * the same broken binary. The user must create a new job to retry.
+         *
+         * Skip the check if target version is empty (old NVS format without
+         * version field — treat conservatively as SUCCEEDED to avoid false
+         * FAILED on devices that upgraded from an older SDK). */
+        if (pending_ver[0] != '\0' &&
+            strcmp(pending_ver, CONEXIO_APP_FW_VERSION) != 0) {
+            LOG_ERR("FOTA: rollback detected — expected v%s, running v%s",
+                    pending_ver, CONEXIO_APP_FW_VERSION);
+            LOG_ERR("FOTA: publishing FAILED for job %s", pending_job);
+            /* Temporarily restore job state so job_status_publish() can build
+             * the topic: it needs g_device_id and g_current_job_id. */
+            strncpy(g_device_id,      pending_dev, sizeof(g_device_id)      - 1);
+            strncpy(g_current_job_id, pending_job, sizeof(g_current_job_id) - 1);
+            job_status_publish("FAILED", NULL, "mcuboot_rollback", -1);
+            fota_pending_clear();
+            /* Reset so the module is ready for a new job */
+            g_device_id[0]      = '\0';
+            g_current_job_id[0] = '\0';
+            return 0;
+        }
+
         LOG_INF("FOTA: publishing pending SUCCEEDED for job %s", pending_job);
 
         /* Publish to our own diagnostics topic — AWS IoT Rules Engine cannot
