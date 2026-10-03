@@ -2806,17 +2806,22 @@ static void cloud_thread_fn(void *a, void *b, void *c)
              * poll cycle.
              * Poll for up to 2 seconds total in 200ms windows. */
             LOG_DBG("Post-reconnect: draining incoming messages...");
+
+#if defined(CONFIG_CONEXIO_CLOUD_FOTA)
+            /* Publish pending FOTA SUCCEEDED BEFORE the drain loop.
+             * The drain loop polls transport_poll() and will exit early if
+             * MQTT disconnects mid-drain (e.g. PSM active-time expiry or a
+             * network drop). If fota_check_and_execute() were called after the
+             * loop it would race a stale/disconnected socket and always return
+             * -ENOTCONN (-128). At this point SUBACK is guaranteed (we got past
+             * transport_connect successfully) so the publish goes out on a live,
+             * subscribed connection. */
+            fota_check_and_execute();
+#endif
+
             for (int drain = 0; drain < 25; drain++) {   /* 5s = 25 × 200ms */
                 transport_poll(K_MSEC(200));
             }
-
-#if defined(CONFIG_CONEXIO_CLOUD_FOTA)
-            /* Run FOTA check after drain — SUBACK is guaranteed at this point
-             * and the connection is fully established. This ensures the pending
-             * SUCCEEDED publish (from a prior FOTA reboot) goes out on a live,
-             * subscribed connection rather than immediately after raw CONNACK. */
-            fota_check_and_execute();
-#endif
         }
 
         /* ── Drive MQTT event loop (500 ms window) ──────────────────── */
