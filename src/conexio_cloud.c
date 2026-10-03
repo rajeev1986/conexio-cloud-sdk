@@ -2012,6 +2012,9 @@ skip_modem_metrics_cbor:;
         }
         enc = cbor_add_tstr(enc, "_sdk",    CONEXIO_SDK_VERSION);
         enc = cbor_add_tstr(enc, "_fw_ver", CONEXIO_APP_FW_VERSION);
+#if defined(CONFIG_CONEXIO_CLOUD_DEVICE_TYPE) && (sizeof(CONFIG_CONEXIO_CLOUD_DEVICE_TYPE) > 1)
+        enc = cbor_add_tstr(enc, "_device_type", CONFIG_CONEXIO_CLOUD_DEVICE_TYPE);
+#endif
         if (g_session_id[0] != '\0') {
             enc = cbor_add_tstr(enc, "_session_id", g_session_id);
         }
@@ -2464,6 +2467,9 @@ skip_modem_metrics:;  /* jump target if modem_info_params_get fails */
          * Distinct from _sdk_version (Conexio SDK library version).
          * Tracked by the cloud and displayed in Fleet Health → Device Identity. */
         cJSON_AddStringToObject(metrics, "_fw_ver", CONEXIO_APP_FW_VERSION);
+#if defined(CONFIG_CONEXIO_CLOUD_DEVICE_TYPE) && (sizeof(CONFIG_CONEXIO_CLOUD_DEVICE_TYPE) > 1)
+        cJSON_AddStringToObject(metrics, "_device_type", CONFIG_CONEXIO_CLOUD_DEVICE_TYPE);
+#endif
         /* _session_id — random 32-bit hex, unique per power-on session.
          * Lets the cloud correlate all packets from one boot across MQTT
          * reconnects without a flash write. Generated in conexio_cloud_init(). */

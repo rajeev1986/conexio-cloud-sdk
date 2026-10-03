@@ -401,6 +401,26 @@ static int execute_job(const char *job_id, const char *job_document)
         }
     }
 
+    /* ── Device type guard ───────────────────────────────────────────────
+     * If the job targets a specific device type (targetDeviceType field)
+     * and this firmware was built for a different type, skip the download
+     * and publish SUCCEEDED immediately. The job is not meant for this device.
+     */
+    {
+        const char *target_type = cJSON_GetStringValue(cJSON_GetObjectItem(doc, "targetDeviceType"));
+        if (target_type && target_type[0] != '\0') {
+            const char *my_type = CONFIG_CONEXIO_CLOUD_DEVICE_TYPE;
+            if (my_type && my_type[0] != '\0' && strcmp(my_type, target_type) != 0) {
+                LOG_WRN("FOTA: type mismatch — job targets '%s', device is '%s' — skipping",
+                        target_type, my_type);
+                strncpy(g_current_job_id, job_id, sizeof(g_current_job_id) - 1);
+                job_status_publish("SUCCEEDED", NULL, NULL, -1);
+                cJSON_Delete(doc);
+                return 0;
+            }
+        }
+    }
+
     strncpy(g_current_job_id, job_id, sizeof(g_current_job_id) - 1);
     strncpy(g_target_version, version ? version : "", sizeof(g_target_version) - 1);
     g_fota_active = true;

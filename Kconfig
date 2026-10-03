@@ -169,6 +169,20 @@ config CONEXIO_CLOUD_CBOR_BUFFER_SIZE
 	  Increase if you have many application metrics or long string values.
 	  The buffer is stack-allocated in build_cbor_payload_for_category().
 
+config CONEXIO_CLOUD_DEVICE_TYPE
+	string "Device type identifier reported as _device_type metric"
+	default ""
+	help
+	  Short identifier for this firmware build's hardware type.
+	  Examples: "nrf9151", "esp32", "rp2040"
+	  Format: lowercase letters, digits, hyphens, underscores; 2-32 chars.
+	  Set CONFIG_CONEXIO_CLOUD_DEVICE_TYPE="nrf9151" in prj.conf.
+	  When non-empty, the SDK publishes this as the _device_type metric in
+	  the diagnostics payload on the first publish after each boot.
+	  The Conexio Cloud backend uses this to build the device-type registry
+	  and enforce FOTA firmware-to-device type matching.
+	  Leave empty to omit the metric (legacy behaviour, default).
+
 config CONEXIO_CLOUD_INTERVAL_SEC
 	int "Telemetry publish interval (seconds)"
 	default 3600
