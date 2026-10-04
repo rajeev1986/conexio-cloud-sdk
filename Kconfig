@@ -183,6 +183,18 @@ config CONEXIO_CLOUD_DEVICE_TYPE
 	  and enforce FOTA firmware-to-device type matching.
 	  Leave empty to omit the metric (legacy behaviour, default).
 
+config CONEXIO_CLOUD_CONN_TYPE
+	string "Connection type reported as _conn_type metric"
+	default "lte" if CONEXIO_CLOUD_MANAGE_LTE
+	default ""
+	help
+	  Connection type identifier for this firmware build.
+	  Examples: "lte", "wifi", "ethernet", "thread"
+	  When non-empty, the SDK publishes this as the _conn_type metric in
+	  the diagnostics payload on the first publish after each boot.
+	  Defaults to "lte" on nRF91xx builds (CONEXIO_CLOUD_MANAGE_LTE=y).
+	  Leave empty to omit.
+
 config CONEXIO_CLOUD_INTERVAL_SEC
 	int "Telemetry publish interval (seconds)"
 	default 3600

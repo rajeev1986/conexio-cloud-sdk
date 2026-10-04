@@ -204,6 +204,14 @@ static bool g_intentional_disconnect = false;
 #define RSRP_CACHE_INVALID  INT16_MIN
 static int16_t  g_cached_rsrp_idx  = RSRP_CACHE_INVALID;
 
+/* Normalized signal strength in dBm — used for cross-device-type comparison.
+ * For LTE: converts raw RSRP index (0-97) to dBm using 3GPP TS 36.133 formula.
+ * Defined locally here so conexio_cloud.c does not depend on cell_location.h.
+ * The identical guard is in cell_location.c — they will not conflict. */
+#ifndef RSRP_IDX_TO_DBM
+#  define RSRP_IDX_TO_DBM(x) ((x) < 0 ? (x) - 140 : (x) - 141)
+#endif
+
 static void on_rsrp_notification(char rsrp_value)
 {
     uint8_t idx = (uint8_t)rsrp_value;
@@ -1933,6 +1941,7 @@ static int build_cbor_payload_for_category(char category,
         }
         if (rsrp_val != RSRP_NOT_KNOWN_IDX) {
             enc = cbor_add_int32(enc, "_rssi", rsrp_val);
+            enc = cbor_add_int32(enc, "_signal_dbm", RSRP_IDX_TO_DBM(rsrp_val));
         }
     }
     {
@@ -2015,6 +2024,11 @@ skip_modem_metrics_cbor:;
 #ifdef CONFIG_CONEXIO_CLOUD_DEVICE_TYPE
         if (CONFIG_CONEXIO_CLOUD_DEVICE_TYPE[0] != '\0') {
             enc = cbor_add_tstr(enc, "_device_type", CONFIG_CONEXIO_CLOUD_DEVICE_TYPE);
+        }
+#endif
+#ifdef CONFIG_CONEXIO_CLOUD_CONN_TYPE
+        if (CONFIG_CONEXIO_CLOUD_CONN_TYPE[0] != '\0') {
+            enc = cbor_add_tstr(enc, "_conn_type", CONFIG_CONEXIO_CLOUD_CONN_TYPE);
         }
 #endif
         if (g_session_id[0] != '\0') {
@@ -2295,6 +2309,7 @@ static char *build_payload_for_category(char category)
         }
         if (rsrp_val != RSRP_NOT_KNOWN_IDX) {
             cJSON_AddNumberToObject(metrics, "_rssi", (double)rsrp_val);
+            cJSON_AddNumberToObject(metrics, "_signal_dbm", (double)RSRP_IDX_TO_DBM(rsrp_val));
         }
     }
     {
@@ -2472,6 +2487,11 @@ skip_modem_metrics:;  /* jump target if modem_info_params_get fails */
 #ifdef CONFIG_CONEXIO_CLOUD_DEVICE_TYPE
         if (CONFIG_CONEXIO_CLOUD_DEVICE_TYPE[0] != '\0') {
             cJSON_AddStringToObject(metrics, "_device_type", CONFIG_CONEXIO_CLOUD_DEVICE_TYPE);
+        }
+#endif
+#ifdef CONFIG_CONEXIO_CLOUD_CONN_TYPE
+        if (CONFIG_CONEXIO_CLOUD_CONN_TYPE[0] != '\0') {
+            cJSON_AddStringToObject(metrics, "_conn_type", CONFIG_CONEXIO_CLOUD_CONN_TYPE);
         }
 #endif
         /* _session_id — random 32-bit hex, unique per power-on session.
