@@ -192,7 +192,8 @@ config CONEXIO_CLOUD_CONN_TYPE
 	  Examples: "lte", "wifi", "ethernet", "thread"
 	  When non-empty, the SDK publishes this as the _conn_type metric in
 	  the diagnostics payload on the first publish after each boot.
-	  Defaults to "lte" on nRF91xx builds (CONEXIO_CLOUD_MANAGE_LTE=y).
+	  Defaults to "lte" on all known cellular boards (Conexio Stratus Pro,
+	  Thingy:91, Thingy:91 X, nRF9161 DK) via CONEXIO_CLOUD_MANAGE_LTE.
 	  Leave empty to omit.
 
 config CONEXIO_CLOUD_INTERVAL_SEC
@@ -384,7 +385,13 @@ config CONEXIO_CLOUD_NTP_TIMEOUT_SEC
 
 config CONEXIO_CLOUD_MANAGE_LTE
 	bool "SDK manages LTE connection"
-	default y
+	# Automatically enabled for all known Conexio and Nordic cellular boards.
+	# For a custom nRF91xx/nRF9161 board not listed here, set
+	# CONFIG_CONEXIO_CLOUD_MANAGE_LTE=y in your prj.conf.
+	default y if BOARD_CONEXIO_STRATUS_PRO_NRF9151_NS || BOARD_CONEXIO_STRATUS_PRO_NRF9151 \
+	          || BOARD_THINGY91X_NRF9151        || BOARD_THINGY91X_NRF9151_NS \
+	          || BOARD_THINGY91_NRF9160         || BOARD_THINGY91_NRF9160_NS \
+	          || BOARD_NRF9161DK_NRF9161        || BOARD_NRF9161DK_NRF9161_NS
 
 config CONEXIO_CLOUD_LTE_TIMEOUT_SEC
 	int "LTE registration timeout (seconds)"
