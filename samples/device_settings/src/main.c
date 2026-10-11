@@ -66,8 +66,9 @@ static enum conexio_setting_status on_alert_threshold(int32_t value, void *arg)
     return CONEXIO_SETTING_OK;
 }
 
-static enum conexio_setting_status on_reporting_mode(const char *value, void *arg)
+static enum conexio_setting_status on_reporting_mode(const char *value, size_t len, void *arg)
 {
+    ARG_UNUSED(len);
     ARG_UNUSED(arg);
     if (strcmp(value, "normal")  != 0 &&
         strcmp(value, "verbose") != 0 &&

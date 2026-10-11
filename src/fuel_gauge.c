@@ -211,14 +211,23 @@ static void fg_thread_fn(void *a, void *b, void *c)
 
         /* ── Advance Coulomb counter ──────────────────────────────────── */
         float delta_s = (float)k_uptime_delta(&g_ref_time) / 1000.0f;
-        float soc     = nrf_fuel_gauge_process(voltage, current, temp,
-                                                delta_s, NULL);
+        float soc     = 0.0f;
+        int fg_ret    = nrf_fuel_gauge_process(voltage, current, temp,
+                                                delta_s, &soc, NULL);
+        if (fg_ret < 0) {
+            LOG_WRN("nrf_fuel_gauge_process failed (%d)", fg_ret);
+            continue;
+        }
 
+        float tte = (float)NAN;
+        float ttf = (float)NAN;
+        nrf_fuel_gauge_tte_get(&tte);
+        nrf_fuel_gauge_ttf_get(&ttf);
         LOG_DBG("FG: V=%.3fV I=%.3fA T=%.1f°C SOC=%.1f%% "
                 "TTE=%.0fs TTF=%.0fs",
                 (double)voltage, (double)(-current), (double)temp, (double)soc,
-                (double)nrf_fuel_gauge_tte_get(),
-                (double)nrf_fuel_gauge_ttf_get());
+                (double)tte,
+                (double)ttf);
 
         /* ── Update cache ─────────────────────────────────────────────── */
         k_spinlock_key_t key = k_spin_lock(&g_cache_lock);
@@ -322,7 +331,10 @@ void conexio_fuel_gauge_on_sleep_enter(void)
         (float)CONFIG_CONEXIO_FUEL_GAUGE_PSM_SLEEP_CURRENT_UA / 1000000.0f;
 
     /* Hand off to the library — it integrates i_sleep × elapsed internally. */
-    nrf_fuel_gauge_idle_set(voltage, temp, i_sleep_a);
+    int idle_ret = nrf_fuel_gauge_idle_set(voltage, temp, i_sleep_a);
+    if (idle_ret < 0) {
+        LOG_WRN("nrf_fuel_gauge_idle_set failed (%d)", idle_ret);
+    }
 
     LOG_DBG("FG: idle_set V=%.3fV T=%.1f°C i_sleep=%.1f µA",
             (double)voltage, (double)temp,
