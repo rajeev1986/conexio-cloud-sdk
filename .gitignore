@@ -22,3 +22,6 @@ samples/*/build/
 # Allow the safe templates
 !prj_ingest_key.conf
 !prj_ingest_key_dev.conf
+
+# Kiro agent artifacts
+.agents/
