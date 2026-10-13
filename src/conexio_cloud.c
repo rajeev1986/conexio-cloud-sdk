@@ -3546,13 +3546,14 @@ int conexio_cloud_publish_single(char category)
     }
     if (!has_data) return 0;
 
-    /* Location topic always publishes as JSON regardless of CBOR setting.
-     * _loc_* metrics include variable-length string fields (_loc_nbrs) and
-     * are processed by a dedicated cloud Lambda (IotDashboardLocationRule)
-     * that expects JSON. No binary location rule exists on the cloud side. */
+    /* When CBOR is enabled, ALL categories including location use CBOR.
+     * The cloud-side IotDashboardBinaryLocationRule uses encode(*, 'base64')
+     * which correctly receives raw CBOR bytes — cbor-x decodes them back to
+     * the original metrics. The SELECT * rule path is unreliable for MQTT
+     * connections from this SDK regardless of payload format. */
 #if defined(CONFIG_CONEXIO_CLOUD_CBOR)
-    if (category != TOPIC_CAT_LOCATION) {
-        /* ── CBOR publish path ───────────────────────────────────────── */
+    {
+        /* ── CBOR publish path — all categories ─────────────────────── */
         uint8_t cbor_buf[CONFIG_CONEXIO_CLOUD_CBOR_BUFFER_SIZE];
         size_t  cbor_len = 0;
         int cbor_ret = build_cbor_payload_for_category(category,
@@ -3568,7 +3569,7 @@ int conexio_cloud_publish_single(char category)
                                     (const char *)cbor_buf, cbor_len);
     }
 #endif
-    /* ── JSON publish path — location always, other categories when CBOR off */
+    /* ── JSON publish path — when CBOR is disabled */
     char *payload = build_payload_for_category(category);
     if (!payload) return -ENOMEM;
     int ret = transport_publish_to(category, payload, strlen(payload));
@@ -3649,8 +3650,8 @@ int conexio_cloud_publish(void)
         }
 
 #if defined(CONFIG_CONEXIO_CLOUD_CBOR)
-        /* CBOR publish path — location topic always uses JSON (see below) */
-        if (cat != TOPIC_CAT_LOCATION) {
+        /* CBOR publish path — all categories including location */
+        if (true) {
             uint8_t cbor_buf[CONFIG_CONEXIO_CLOUD_CBOR_BUFFER_SIZE];
             size_t  cbor_len = 0;
             int cbor_ret = build_cbor_payload_for_category(cat,
