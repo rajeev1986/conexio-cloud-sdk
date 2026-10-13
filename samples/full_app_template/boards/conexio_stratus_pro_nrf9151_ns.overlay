@@ -1,9 +1,13 @@
 /*
- * Copyright (c) 2026 Conexio Technologies, Inc
+ * Copyright (c) 2024 Conexio Technologies, Inc
  *
  * SPDX-License-Identifier: Apache-2.0
  *
- * Conexio Stratus Pro (nRF9151) overlay for the Conexio Cloud SDK sample app.
+ * Conexio Stratus Pro (nRF9151) overlay for the Conexio Cloud SDK full_app_template.
+ *
+ * Partition layout:
+ *   nrf91_bootloader_partitions.dtsi — MCUboot + application slot layout
+ *   nrf91_sram_partitions.dtsi       — NS SRAM partition definitions
  *
  * LED GPIO — inherited from conexio_stratus_pro_common.dtsi:
  *   led0 alias → gpio0 pin 25, GPIO_ACTIVE_HIGH
@@ -18,15 +22,16 @@
  *   (npm13xx_charger.c) to write CHGR_OFFSET_DIS_SET bit 1 = 1, which
  *   disables the NTC comparator. Without this the charger halts because
  *   it sees an open circuit on the NTC pin and reports garbage temperature.
- *   This replaces the manual mfd_npm1300_reg_write() workaround needed in
- *   NCS ≤ v2.9.0 — the v3.2.1 driver handles it automatically via DTS.
  *
  * UART0 — low-power configuration:
  *   When building with low_power.conf (CONFIG_SERIAL=n / CONFIG_LOG=n),
  *   the UART RX pin is deleted to prevent current leakage through a
- *   floating or undriven RX line. TX is kept so the UART peripheral
- *   can still be held in a defined state by the hardware.
+ *   floating or undriven RX line.
  */
+
+#include <samples/cellular/nrf91_bootloader_partitions.dtsi>
+
+#include <samples/cellular/nrf91_sram_partitions.dtsi>
 
 /* Enable I2C pull-ups for nPM1300 PMIC communication */
 &i2c2_default {

@@ -330,7 +330,13 @@ static float battery_read_soc(bool *is_charging)
         : 0.0f;
     last_sample_ms = now_ms;
 
-    float soc = nrf_fuel_gauge_process(voltage, current, temp, delta_sec, NULL);
+    float soc    = 0.0f;
+    int fg_ret   = nrf_fuel_gauge_process(voltage, current, temp, delta_sec,
+                                           &soc, NULL);
+    if (fg_ret < 0) {
+        LOG_WRN("battery_read_soc: nrf_fuel_gauge_process failed (%d)", fg_ret);
+        return -1.0f;
+    }
 
     LOG_DBG("battery: V=%.3fV I=%.3fA T=%.1fC SOC=%.1f%% delta=%.1fs",
             (double)voltage, (double)(-current), (double)temp,
