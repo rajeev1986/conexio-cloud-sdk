@@ -19,13 +19,8 @@
  *     "humidity_real"    — SHT4x reading    (NAN if sensor absent)
  *
  *   CONFIG_CONEXIO_SAMPLE_SIMULATED_SENSORS=n
- *     "temperature"      — SHT4x reading    (forwards to read_temperature_real)
- *     "humidity"         — SHT4x reading    (forwards to read_humidity_real)
- *     "temperature_real" — SHT4x reading    (same value, separate metric)
- *     "humidity_real"    — SHT4x reading    (same value, separate metric)
- *
- * Dashboard widgets configured for "temperature"/"humidity" always receive
- * data regardless of simulated mode.
+ *     "temperature"      — SHT4x reading (real sensor only)
+ *     "humidity"         — SHT4x reading (real sensor only)
  *
  * The SDK handles:
  *   - LTE, MQTT, CBOR encoding, retry, PSM
@@ -213,10 +208,16 @@ int main(void)
     conexio_cloud_register_sensor("temperature", read_temperature, NULL);
     conexio_cloud_register_sensor("humidity",    read_humidity,    NULL);
 
-    /* Register SHT4x-specific names — useful when simulated=y to compare
-     * real vs. simulated side by side; NAN when sensor absent */
+    /* Register SHT4x-specific names only when simulated mode is active.
+     * When SIMULATED_SENSORS=n, "temperature"/"humidity" ARE the real values
+     * (forwarded from the SHT4x callbacks), so _real would be redundant
+     * duplicates — two separate I2C reads would give slightly different values
+     * and confuse dashboards. With SIMULATED_SENSORS=y they are useful for
+     * side-by-side comparison of simulated vs. real sensor output. */
+#if defined(CONFIG_CONEXIO_SAMPLE_SIMULATED_SENSORS)
     conexio_cloud_register_sensor("temperature_real", read_temperature_real, NULL);
     conexio_cloud_register_sensor("humidity_real",    read_humidity_real,    NULL);
+#endif
 
     /* Register alertThreshold setting — Conexio Console can update remotely */
     conexio_cloud_register_setting_int("alertThreshold", on_alert_threshold, NULL);
