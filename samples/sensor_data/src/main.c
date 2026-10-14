@@ -233,8 +233,10 @@ int main(void)
         conexio_cloud_publish();
     }
 
+    /* The SDK background thread handles periodic publishing at
+     * CONFIG_CONEXIO_CLOUD_INTERVAL_SEC. The main thread just stays alive. */
     while (1) {
-        k_sleep(K_SECONDS(5));
+        k_sleep(K_SECONDS(CONFIG_CONEXIO_CLOUD_INTERVAL_SEC));
     }
     return 0;
 }
