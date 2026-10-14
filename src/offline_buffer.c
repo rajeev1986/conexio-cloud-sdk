@@ -31,7 +31,7 @@
  */
 
 #include <zephyr/kernel.h>
-#include <zephyr/fs/nvs.h>
+#include <zephyr/kvss/nvs.h>
 #include <zephyr/storage/flash_map.h>
 #include <zephyr/drivers/flash.h>   /* flash_get_page_info_by_offs */
 #include <zephyr/logging/log.h>
@@ -91,7 +91,7 @@ static int nvs_write_u16(uint16_t key, uint16_t val)
 
 int offline_buffer_init(void)
 {
-    const struct device *flash_dev = FIXED_PARTITION_DEVICE(storage_partition);
+    const struct device *flash_dev = PARTITION_DEVICE(storage_partition);
 
     if (!device_is_ready(flash_dev)) {
         LOG_ERR("Offline buffer: flash device not ready");
@@ -103,7 +103,7 @@ int offline_buffer_init(void)
      * internal flash geometry.  This ensures NVS is configured correctly. */
     struct flash_pages_info page_info;
     int ret = flash_get_page_info_by_offs(flash_dev,
-                                          FIXED_PARTITION_OFFSET(storage_partition),
+                                          PARTITION_OFFSET(storage_partition),
                                           &page_info);
     if (ret) {
         LOG_ERR("Offline buffer: cannot read flash page info (%d)", ret);
@@ -111,7 +111,7 @@ int offline_buffer_init(void)
     }
 
     fs.flash_device = flash_dev;
-    fs.offset       = FIXED_PARTITION_OFFSET(storage_partition);
+    fs.offset       = PARTITION_OFFSET(storage_partition);
     fs.sector_size  = page_info.size;   /* runtime, not hardcoded */
     fs.sector_count = NVS_SECTOR_COUNT;
 

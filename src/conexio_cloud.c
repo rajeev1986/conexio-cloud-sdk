@@ -543,15 +543,15 @@ static void ntp_event_handler(const struct date_time_evt *evt)
  *   REBOOT_CNT_NVS_ID = 1  (must not clash with other NVS users in the app)
  */
 #if defined(CONFIG_NVS)
-#include <zephyr/fs/nvs.h>
+#include <zephyr/kvss/nvs.h>
 #include <zephyr/drivers/flash.h>
 #include <zephyr/storage/flash_map.h>
 
 /* NVS filesystem lives in the 'storage_partition' flash partition.
  * This partition is defined in the board DTS file. */
 #define NVS_PARTITION        storage_partition
-#define NVS_PARTITION_DEVICE FIXED_PARTITION_DEVICE(NVS_PARTITION)
-#define NVS_PARTITION_OFFSET FIXED_PARTITION_OFFSET(NVS_PARTITION)
+#define NVS_PARTITION_DEVICE PARTITION_DEVICE(NVS_PARTITION)
+#define NVS_PARTITION_OFFSET PARTITION_OFFSET(NVS_PARTITION)
 /*
  * NVS key IDs — must not clash with each other or with offline_buffer.c.
  *   0x0001 = reboot counter   (this file)

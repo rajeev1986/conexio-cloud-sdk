@@ -229,9 +229,10 @@ static void fg_thread_fn(void *a, void *b, void *c)
         float ttf = (float)NAN;
         nrf_fuel_gauge_tte_get(&tte);
         nrf_fuel_gauge_ttf_get(&ttf);
-        LOG_DBG("FG: V=%.3fV I=%.3fA T=%.1f°C SOC=%.1f%% "
+        LOG_DBG("FG: V=%.3fV I=%.3fA T=%.1f°C SOC=%.1f%% SoH=%.1f%% "
                 "TTE=%.0fs TTF=%.0fs",
                 (double)voltage, (double)(-current), (double)temp, (double)soc,
+                (double)(soh >= 0.0f ? soh : -1.0f),
                 (double)tte,
                 (double)ttf);
 

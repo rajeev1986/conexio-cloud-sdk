@@ -23,7 +23,7 @@
 #include <zephyr/net/http/parser_url.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/reboot.h>
-#include <zephyr/fs/nvs.h>
+#include <zephyr/kvss/nvs.h>
 #include <zephyr/storage/flash_map.h>
 #include <cJSON.h>
 #include <cJSON_os.h>
@@ -104,8 +104,8 @@ void fota_set_can_start_cb(fota_can_start_cb_t cb)
 #define FOTA_INSTALLED_VER_MAX     32U   /* matches APP_VERSION_STRING max */
 
 #define NVS_PARTITION        storage_partition
-#define NVS_PARTITION_DEVICE FIXED_PARTITION_DEVICE(NVS_PARTITION)
-#define NVS_PARTITION_OFFSET FIXED_PARTITION_OFFSET(NVS_PARTITION)
+#define NVS_PARTITION_DEVICE PARTITION_DEVICE(NVS_PARTITION)
+#define NVS_PARTITION_OFFSET PARTITION_OFFSET(NVS_PARTITION)
 
 static struct nvs_fs  g_fota_nvs;
 static bool           g_fota_nvs_ready = false;
