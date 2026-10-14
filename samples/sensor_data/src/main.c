@@ -10,19 +10,26 @@
  * Demonstrates fetching sensor readings (temperature, humidity) and
  * streaming them to Conexio Cloud on a configurable interval.
  *
- * By default this sample uses SIMULATED sensors that return random values.
- * To use real hardware:
- *   1. Set CONFIG_CONEXIO_SAMPLE_SIMULATED_SENSORS=n in prj.conf
- *   2. Implement the real sensor reads in read_temperature() / read_humidity()
- *      using the standard Zephyr sensor driver API.
+ * Metric behaviour:
+ *
+ *   CONFIG_CONEXIO_SAMPLE_SIMULATED_SENSORS=y (default)
+ *     "temperature"      — random 20–40 °C  (simulated)
+ *     "humidity"         — random 40–80 %   (simulated)
+ *     "temperature_real" — SHT4x reading    (NAN if sensor absent)
+ *     "humidity_real"    — SHT4x reading    (NAN if sensor absent)
+ *
+ *   CONFIG_CONEXIO_SAMPLE_SIMULATED_SENSORS=n
+ *     "temperature"      — SHT4x reading    (forwards to read_temperature_real)
+ *     "humidity"         — SHT4x reading    (forwards to read_humidity_real)
+ *     "temperature_real" — SHT4x reading    (same value, separate metric)
+ *     "humidity_real"    — SHT4x reading    (same value, separate metric)
+ *
+ * Dashboard widgets configured for "temperature"/"humidity" always receive
+ * data regardless of simulated mode.
  *
  * The SDK handles:
  *   - LTE, MQTT, CBOR encoding, retry, PSM
  *   - SDK auto-metrics: _rssi, _snr, _reboot_cnt, _sdk_version, etc.
- *
- * The application provides:
- *   - "temperature" (°C) and "humidity" (%) sensor callbacks
- *   - Alert publishing when temperature exceeds a threshold
  */
 
 #include <conexio_cloud/conexio_cloud.h>
@@ -52,13 +59,67 @@ static int g_alert_threshold = 35;
 static const struct device *s_sht4x;
 #endif
 
-/* ── Sensor callbacks ─────────────────────────────────────────────────────
- * The SDK calls these before every publish.
- * Return NAN to skip a reading for a given cycle.
+/* ── Real SHT4x callbacks (defined first so simulated=n can forward to them)
+ *
+ * Each callback fetches a fresh sample independently and checks every return
+ * value. Returns NAN when the sensor is absent, not ready, fetch fails, or
+ * the channel read fails — the SDK silently skips NAN values so the sample
+ * builds and runs on boards without the sensor physically attached.
  */
+#if DT_HAS_COMPAT_STATUS_OKAY(sensirion_sht4x)
 
+static double read_temperature_real(void *arg)
+{
+    ARG_UNUSED(arg);
+    if (s_sht4x == NULL || !device_is_ready(s_sht4x)) {
+        return (double)NAN;
+    }
+    struct sensor_value val;
+    if (sensor_sample_fetch(s_sht4x) < 0) {
+        LOG_WRN("SHT4x: sample fetch failed");
+        return (double)NAN;
+    }
+    if (sensor_channel_get(s_sht4x, SENSOR_CHAN_AMBIENT_TEMP, &val) < 0) {
+        LOG_WRN("SHT4x: temperature channel read failed");
+        return (double)NAN;
+    }
+    return sensor_value_to_double(&val);
+}
+
+static double read_humidity_real(void *arg)
+{
+    ARG_UNUSED(arg);
+    if (s_sht4x == NULL || !device_is_ready(s_sht4x)) {
+        return (double)NAN;
+    }
+    /* Independent fetch per callback — no ordering dependency. */
+    struct sensor_value val;
+    if (sensor_sample_fetch(s_sht4x) < 0) {
+        LOG_WRN("SHT4x: sample fetch failed (humidity)");
+        return (double)NAN;
+    }
+    if (sensor_channel_get(s_sht4x, SENSOR_CHAN_HUMIDITY, &val) < 0) {
+        LOG_WRN("SHT4x: humidity channel read failed");
+        return (double)NAN;
+    }
+    return sensor_value_to_double(&val);
+}
+
+#else  /* board has no sensirion_sht4x DT node */
+
+static double read_temperature_real(void *arg) { ARG_UNUSED(arg); return (double)NAN; }
+static double read_humidity_real(void *arg)    { ARG_UNUSED(arg); return (double)NAN; }
+
+#endif /* DT_HAS_COMPAT_STATUS_OKAY(sensirion_sht4x) */
+
+/* ── Primary sensor callbacks ("temperature" / "humidity") ───────────────
+ *
+ * SIMULATED_SENSORS=y → random values (default, good for cloud integration tests)
+ * SIMULATED_SENSORS=n → forwards to SHT4x real callbacks above so the standard
+ *   metric names always carry valid data and dashboard widgets never need updating.
+ */
 #if defined(CONFIG_CONEXIO_SAMPLE_SIMULATED_SENSORS)
-#warning "Simulated sensors active — replace with real driver reads for production."
+#warning "Simulated sensors active — set CONFIG_CONEXIO_SAMPLE_SIMULATED_SENSORS=n for production."
 
 static double read_temperature(void *arg)
 {
@@ -78,84 +139,25 @@ static double read_humidity(void *arg)
     return 40.0 + (double)(sys_rand32_get() % 400) * 0.1; /* 40–80 % */
 }
 
-#else
+#else  /* SIMULATED_SENSORS=n — forward to SHT4x */
 
 static double read_temperature(void *arg)
 {
-    ARG_UNUSED(arg);
-    /*
-     * Replace with your sensor driver:
-     *   struct sensor_value val;
-     *   sensor_sample_fetch(my_sensor);
-     *   sensor_channel_get(my_sensor, SENSOR_CHAN_AMBIENT_TEMP, &val);
-     *   double temp = sensor_value_to_double(&val);
-     *   if (g_alert_threshold > 0 && temp >= (double)g_alert_threshold)
-     *       conexio_cloud_publish_alert("temperature", temp, g_alert_threshold);
-     *   return temp;
-     */
-    return (double)NAN;
+    double temp = read_temperature_real(arg);
+    if (!isnan(temp) && g_alert_threshold > 0 && temp >= (double)g_alert_threshold) {
+        conexio_cloud_publish_alert("temperature", temp, (double)g_alert_threshold);
+        LOG_WRN("Alert: temperature %.1f °C exceeds threshold %d °C",
+                temp, g_alert_threshold);
+    }
+    return temp;
 }
 
 static double read_humidity(void *arg)
 {
-    ARG_UNUSED(arg);
-    /* Replace with your sensor driver */
-    return (double)NAN;
-}
-#endif
-
-/* ── Real SHT4x sensor callbacks ────────────────────────────────────────
- * read_temperature_real: fetches a fresh sample from the SHT4x, returns
- *   temperature in °C as a double.
- * read_humidity_real: reads the humidity channel from the same buffered
- *   sample WITHOUT triggering a second I2C transaction (Zephyr sensor API
- *   stores the last fetch result until the next call to sensor_sample_fetch).
- *
- * IMPORTANT: register temperature_real BEFORE humidity_real so that the
- *   SDK always calls the fetch before the channel-only read in the same
- *   publish cycle.
- *
- * Returns NAN when the sensor is absent, not ready, or fetch fails —
- * the SDK skips NAN values silently so the sample works on boards
- * without the sensor attached.
- */
-#if DT_HAS_COMPAT_STATUS_OKAY(sensirion_sht4x)
-
-static double read_temperature_real(void *arg)
-{
-    ARG_UNUSED(arg);
-    if (s_sht4x == NULL || !device_is_ready(s_sht4x)) {
-        return (double)NAN;
-    }
-    struct sensor_value val;
-    if (sensor_sample_fetch(s_sht4x) < 0) {
-        LOG_WRN("SHT4x: sample fetch failed");
-        return (double)NAN;
-    }
-    sensor_channel_get(s_sht4x, SENSOR_CHAN_AMBIENT_TEMP, &val);
-    return sensor_value_to_double(&val);
+    return read_humidity_real(arg);
 }
 
-static double read_humidity_real(void *arg)
-{
-    ARG_UNUSED(arg);
-    if (s_sht4x == NULL || !device_is_ready(s_sht4x)) {
-        return (double)NAN;
-    }
-    /* No sensor_sample_fetch here — read_temperature_real (registered and
-     * called first) already fetched the sample this cycle.
-     * sensor_channel_get reads from the driver's internal buffer. */
-    struct sensor_value val;
-    sensor_channel_get(s_sht4x, SENSOR_CHAN_HUMIDITY, &val);
-    return sensor_value_to_double(&val);
-}
-
-#else  /* !DT_HAS_COMPAT_STATUS_OKAY(sensirion_sht4x) */
-
-static double read_temperature_real(void *arg) { ARG_UNUSED(arg); return (double)NAN; }
-static double read_humidity_real(void *arg)    { ARG_UNUSED(arg); return (double)NAN; }
-
-#endif /* DT_HAS_COMPAT_STATUS_OKAY(sensirion_sht4x) */
+#endif /* CONFIG_CONEXIO_SAMPLE_SIMULATED_SENSORS */
 
 /* ── Settings handler ─────────────────────────────────────────────────────
  * Receive alertThreshold updates pushed from Conexio Console → OTA Config.
@@ -207,11 +209,12 @@ int main(void)
     }
 #endif
 
-    /* Register sensor callbacks — SDK calls these before each publish */
+    /* Register primary callbacks — always published under these names */
     conexio_cloud_register_sensor("temperature", read_temperature, NULL);
     conexio_cloud_register_sensor("humidity",    read_humidity,    NULL);
 
-    /* Real SHT4x metrics — registered after simulated; NAN returned when absent */
+    /* Register SHT4x-specific names — useful when simulated=y to compare
+     * real vs. simulated side by side; NAN when sensor absent */
     conexio_cloud_register_sensor("temperature_real", read_temperature_real, NULL);
     conexio_cloud_register_sensor("humidity_real",    read_humidity_real,    NULL);
 
@@ -220,8 +223,8 @@ int main(void)
 
     /* Initialise: LTE → NTP → TLS → MQTT thread */
     int ret = conexio_cloud_init(on_cloud_event);
-    if (ret) { 
-        LOG_ERR("init failed (%d)", ret); return -1; 
+    if (ret) {
+        LOG_ERR("init failed (%d)", ret); return -1;
     }
 
     LOG_INF("Connecting...");
