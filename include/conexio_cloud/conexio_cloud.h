@@ -433,7 +433,7 @@ double conexio_cloud_get_last_battery_mv(void);
  * LOG_INF("App v%s | Conexio SDK v" CONEXIO_CLOUD_VERSION, APP_VERSION_STRING);
  * @endcode
  */
-#define CONEXIO_CLOUD_VERSION "2.3.0"
+#define CONEXIO_CLOUD_VERSION "1.0.0"
 
 /* ── SDK status ──────────────────────────────────────────────────────────── */
 
