@@ -50,7 +50,7 @@ static int g_alert_threshold = 35;
  * Initialised in main(); NULL on boards without the DT node.
  * Both real-sensor callbacks guard against NULL / not-ready before use.
  */
-#if DT_HAS_COMPAT_STATUS_OKAY(sensirion_sht4x)
+#if IS_ENABLED(CONFIG_SHT4X) && DT_HAS_COMPAT_STATUS_OKAY(sensirion_sht4x)
 static const struct device *s_sht4x;
 #endif
 
@@ -60,8 +60,12 @@ static const struct device *s_sht4x;
  * value. Returns NAN when the sensor is absent, not ready, fetch fails, or
  * the channel read fails — the SDK silently skips NAN values so the sample
  * builds and runs on boards without the sensor physically attached.
+ *
+ * Guard: both CONFIG_SHT4X=y AND the DT node must be present. When
+ * CONFIG_SHT4X=n the stub versions (returning NAN) are used instead, which
+ * means the simulated sensor path continues to work without glitches.
  */
-#if DT_HAS_COMPAT_STATUS_OKAY(sensirion_sht4x)
+#if IS_ENABLED(CONFIG_SHT4X) && DT_HAS_COMPAT_STATUS_OKAY(sensirion_sht4x)
 
 static double read_temperature_real(void *arg)
 {
@@ -100,12 +104,12 @@ static double read_humidity_real(void *arg)
     return sensor_value_to_double(&val);
 }
 
-#else  /* board has no sensirion_sht4x DT node */
+#else  /* board has no sensirion_sht4x DT node, or CONFIG_SHT4X=n */
 
 static double read_temperature_real(void *arg) { ARG_UNUSED(arg); return (double)NAN; }
 static double read_humidity_real(void *arg)    { ARG_UNUSED(arg); return (double)NAN; }
 
-#endif /* DT_HAS_COMPAT_STATUS_OKAY(sensirion_sht4x) */
+#endif /* IS_ENABLED(CONFIG_SHT4X) && DT_HAS_COMPAT_STATUS_OKAY(sensirion_sht4x) */
 
 /* ── Primary sensor callbacks ("temperature" / "humidity") ───────────────
  *
@@ -193,8 +197,8 @@ int main(void)
             IS_ENABLED(CONFIG_CONEXIO_SAMPLE_SIMULATED_SENSORS) ? "yes" : "no",
             IS_ENABLED(CONFIG_SHT4X) ? "enabled" : "disabled");
 
-    /* Initialise real SHT4x sensor — guarded; no-op on boards without the node */
-#if DT_HAS_COMPAT_STATUS_OKAY(sensirion_sht4x)
+    /* Initialise real SHT4x sensor — guarded by both Kconfig and DT node */
+#if IS_ENABLED(CONFIG_SHT4X) && DT_HAS_COMPAT_STATUS_OKAY(sensirion_sht4x)
     s_sht4x = DEVICE_DT_GET_ANY(sensirion_sht4x);
     if (!device_is_ready(s_sht4x)) {
         LOG_WRN("SHT4x not ready — real sensor metrics will be skipped");
