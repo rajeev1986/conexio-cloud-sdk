@@ -100,6 +100,18 @@ double conexio_fuel_gauge_read_mv(void);
 float conexio_fuel_gauge_read_soc(void);
 
 /**
+ * @brief Returns the latest cached state-of-health.
+ *
+ * SoH is estimated by the nRF Fuel Gauge library and updated on each
+ * successful nrf_fuel_gauge_soh_get() call in the 1 Hz sampling thread.
+ * The library may return -ENOTSUP until enough charge/discharge cycles
+ * have been observed; in that case -1.0 is cached and returned here.
+ *
+ * @return SoH in percent (0.0–100.0), or -1.0 if not yet sampled or unavailable.
+ */
+float conexio_fuel_gauge_read_soh(void);
+
+/**
  * @brief Returns true if the battery is currently charging (VBUS present).
  */
 bool conexio_fuel_gauge_is_charging(void);

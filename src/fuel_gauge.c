@@ -84,6 +84,7 @@ static K_SEM_DEFINE(fg_resume_sem, 0, 1);
  * Spinlock ensures atomic read across all callers. */
 static struct k_spinlock g_cache_lock;
 static float  g_cached_soc_pct  = -1.0f;
+static float  g_cached_soh_pct  = -1.0f;
 static double g_cached_mv       = NAN;
 static bool   g_cached_charging = false;
 
@@ -219,6 +220,11 @@ static void fg_thread_fn(void *a, void *b, void *c)
             continue;
         }
 
+        float soh = -1.0f;
+        if (nrf_fuel_gauge_soh_get(&soh) < 0) {
+            soh = -1.0f;
+        }
+
         float tte = (float)NAN;
         float ttf = (float)NAN;
         nrf_fuel_gauge_tte_get(&tte);
@@ -232,6 +238,7 @@ static void fg_thread_fn(void *a, void *b, void *c)
         /* ── Update cache ─────────────────────────────────────────────── */
         k_spinlock_key_t key = k_spin_lock(&g_cache_lock);
         g_cached_soc_pct  = soc;
+        g_cached_soh_pct  = soh;
         g_cached_mv       = (double)voltage * 1000.0;
         g_cached_charging = is_charging;
         k_spin_unlock(&g_cache_lock, key);
@@ -396,4 +403,13 @@ bool conexio_fuel_gauge_is_charging(void)
 bool conexio_fuel_gauge_is_ready(void)
 {
     return g_ready;
+}
+
+float conexio_fuel_gauge_read_soh(void)
+{
+    if (!g_ready) return -1.0f;
+    k_spinlock_key_t key = k_spin_lock(&g_cache_lock);
+    float soh = g_cached_soh_pct;
+    k_spin_unlock(&g_cache_lock, key);
+    return soh;
 }
