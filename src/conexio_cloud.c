@@ -151,8 +151,8 @@
 /* llabs() — used in timestamp formatting */
 #include <stdlib.h>
 
-/* SDK semantic version — reported in every telemetry payload as _sdk_version */
-#define CONEXIO_SDK_VERSION "1.0.0"
+/* SDK version comes from the public header (conexio_cloud.h) which is already
+ * included above — CONEXIO_SDK_VERSION is defined there. No duplicate here. */
 
 LOG_MODULE_REGISTER(conexio_cloud, LOG_LEVEL_INF);
 

@@ -430,10 +430,14 @@ double conexio_cloud_get_last_battery_mv(void);
  *
  * Example:
  * @code
- * LOG_INF("App v%s | Conexio SDK v" CONEXIO_CLOUD_VERSION, APP_VERSION_STRING);
+ * LOG_INF("App v%s | Conexio SDK v" CONEXIO_SDK_VERSION, APP_VERSION_STRING);
  * @endcode
  */
-#define CONEXIO_CLOUD_VERSION "1.0.0"
+#define CONEXIO_SDK_VERSION   "1.0.0"
+
+/** Backwards-compatible alias — existing app code using CONEXIO_CLOUD_VERSION
+ *  continues to compile without changes. */
+#define CONEXIO_CLOUD_VERSION  CONEXIO_SDK_VERSION
 
 /* ── SDK status ──────────────────────────────────────────────────────────── */
 
