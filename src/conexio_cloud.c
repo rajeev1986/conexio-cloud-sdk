@@ -152,7 +152,7 @@
 #include <stdlib.h>
 
 /* SDK semantic version — reported in every telemetry payload as _sdk_version */
-#define CONEXIO_SDK_VERSION "2.3.0"
+#define CONEXIO_SDK_VERSION "1.0.0"
 
 LOG_MODULE_REGISTER(conexio_cloud, LOG_LEVEL_INF);
 
