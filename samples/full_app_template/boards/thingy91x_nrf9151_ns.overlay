@@ -1,0 +1,12 @@
+/*
+ * Copyright (c) 2025 Nordic Semiconductor ASA
+ *
+ * SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
+ *
+ * LED GPIO — inherited from thingy91x_nrf9151_common.dtsi:
+ *   led0 alias → red_led → gpio0 pin 29, active-high (no polarity flag)
+ *   No LED overlay entry needed; the base DTS already provides the led0 alias.
+ */
+
+#include <samples/cellular/nrf91_bootloader_partitions.dtsi>
+#include <samples/cellular/nrf91_sram_partitions.dtsi>
