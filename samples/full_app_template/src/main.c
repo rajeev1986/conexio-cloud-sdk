@@ -61,7 +61,6 @@
 #endif
 
 #include <zephyr/kernel.h>
-#include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/sensor.h>
 #include <zephyr/random/random.h>
 #include <zephyr/logging/log.h>
@@ -78,21 +77,13 @@
 #include <conexio_cloud/cell_location.h>
 #endif
 
+#include "led.h"
+
 LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
 
 /* ── Application state ────────────────────────────────────────────────── */
 static int  g_alert_threshold = 80;   /* temperature alert threshold (°C) */
 static bool g_debug_mode      = false;
-/* ── LED GPIO ─────────────────────────────────────────────────────────── */
-/*
- * The Conexio Stratus Pro has one user-controllable LED:
- *   led0 → gpio0 pin 25, GPIO_ACTIVE_HIGH
- * Defined in the board DTS (conexio_stratus_pro_common.dtsi).
- * Accessible via the led0 alias — no overlay entry needed.
- */
-#define LED0_NODE DT_ALIAS(led0)
-static const struct gpio_dt_spec g_led = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
-
 /* ── Telemetry interval limits ────────────────────────────────────────── */
 #define TELEMETRY_INTERVAL_MIN_S    10       /* Fastest: 10 s — debug / development   */
 #define TELEMETRY_INTERVAL_MAX_S    604800   /* Slowest: 7 days — ultra-low-power      */
@@ -223,28 +214,20 @@ static void on_fan_off(const char *payload_json, void *arg)
  */
 static void on_led_on(const char *payload_json, void *arg)
 {
-    ARG_UNUSED(payload_json); ARG_UNUSED(arg);
-    int ret = gpio_pin_set_dt(&g_led, 1);
-    if (ret != 0) {
-        LOG_ERR("LED_ON: gpio_pin_set_dt failed (%d)", ret);
-    } else {
-        LOG_INF("LED_ON: LED is ON");
-    }
+	ARG_UNUSED(payload_json); ARG_UNUSED(arg);
+	led_on(0);
+	LOG_INF("LED_ON");
 }
 
 static void on_led_off(const char *payload_json, void *arg)
 {
-    ARG_UNUSED(payload_json); ARG_UNUSED(arg);
-    int ret = gpio_pin_set_dt(&g_led, 0);
-    if (ret != 0) {
-        LOG_ERR("LED_OFF: gpio_pin_set_dt failed (%d)", ret);
-    } else {
-        LOG_INF("LED_OFF: LED is OFF");
-    }
-    /* Cancel the firmware watchdog — stop command arrived from the cloud,
-     * so the autonomous timer is no longer needed. This prevents a duplicate
-     * LED_OFF from firing when the k_timer would have expired. */
-    conexio_cloud_cancel_schedule_watchdog();
+	ARG_UNUSED(payload_json); ARG_UNUSED(arg);
+	led_off(0);
+	/* Cancel the firmware watchdog -- stop command arrived from the cloud,
+	 * so the autonomous timer is no longer needed. This prevents a duplicate
+	 * LED_OFF from firing when the k_timer would have expired. */
+	conexio_cloud_cancel_schedule_watchdog();
+	LOG_INF("LED_OFF");
 }
 
 /* ── Schedule lifecycle callback ──────────────────────────────────────── */
@@ -341,25 +324,14 @@ int main(void)
     LOG_INF("=== Conexio Advanced Sample ===");
     LOG_INF("App v%s | SDK v" CONEXIO_CLOUD_VERSION, APP_VERSION_STRING);
 
-    /* ── LED GPIO init ────────────────────────────────────────────────
-     * Configure the on-board LED as output, initially OFF.
-     * Must happen before conexio_cloud_init() so the LED is ready
-     * when the first LED_ON/LED_OFF command arrives.              */
-    if (!gpio_is_ready_dt(&g_led)) {
-        LOG_ERR("LED GPIO device not ready");
-    } else {
-        int ret = gpio_pin_configure_dt(&g_led, GPIO_OUTPUT_INACTIVE);
-        if (ret != 0) {
-            LOG_ERR("LED GPIO configure failed (%d)", ret);
-        } else {
-            LOG_INF("LED GPIO ready (pin %d)", g_led.pin);
-            /* Boot indicator — blink LED on for 2 s then off so the user
-             * can confirm the board has started without a serial cable. */
-            gpio_pin_set_dt(&g_led, 1);
-            k_sleep(K_SECONDS(2));
-            gpio_pin_set_dt(&g_led, 0);
-        }
-    }
+	/* ── LED init ────────────────────────────────────────────────────────
+	 * Configure the on-board LED as output, perform boot blink, then off.
+	 * Must happen before conexio_cloud_init() so the LED is ready
+	 * when the first LED_ON/LED_OFF command arrives.                     */
+	int led_ret = led_init();
+	if (led_ret != 0) {
+		LOG_ERR("LED init failed (%d)", led_ret);
+	}
 
     /* ── Register sensor callbacks ────────────────────────────────────
      * The SDK calls these before each publish — no send_metric in loop. */

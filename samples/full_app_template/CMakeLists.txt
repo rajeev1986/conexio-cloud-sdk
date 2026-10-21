@@ -6,6 +6,7 @@ project(full_app_template)
 # Application sources
 target_sources(app PRIVATE
   src/main.c
+  src/led.c
 )
 
 # ── cJSON include path ────────────────────────────────────────────────────────
