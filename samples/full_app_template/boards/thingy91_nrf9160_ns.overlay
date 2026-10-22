@@ -3,10 +3,16 @@
  *
  * SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
  *
+ * Partition layout — the Thingy:91 board DTS already defines its own
+ *   complete flash + SRAM partitions (thingy91_nrf9160_partition.dtsi
+ *   + nrf91_partition_sram.dtsi). No partition overlay entries needed here;
+ *   adding nrf91_bootloader_partitions.dtsi would cause a DTS conflict because
+ *   the board uses its own immutable bootloader partition scheme.
+ *
  * LED GPIO — inherited from thingy91_nrf9160_common.dtsi:
- *   led0 alias → red_led → gpio0 pin 29, active-high (no polarity flag)
- *   No LED overlay entry needed; the base DTS already provides the led0 alias.
+ *   led0 alias → red_led → gpio0 pin 29, active-high
+ *   No LED overlay entry needed.
+ *
+ * PMIC — Thingy:91 uses an ADP5360 PMIC (not nPM1300). Battery metrics
+ *   are disabled for this board via thingy91_nrf9160_ns.conf.
  */
-
-#include <samples/cellular/nrf91_bootloader_partitions.dtsi>
-#include <samples/cellular/nrf91_sram_partitions.dtsi>

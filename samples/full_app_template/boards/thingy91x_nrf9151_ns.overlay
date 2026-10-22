@@ -3,10 +3,23 @@
  *
  * SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
  *
+ * Partition layout — the Thingy:91 X board DTS already defines its own
+ *   complete flash + SRAM partitions (thingy91x_nrf9151_partition.dtsi
+ *   + nrf91_partition_sram.dtsi). No partition overlay entries needed here;
+ *   adding nrf91_bootloader_partitions.dtsi would cause a DTS conflict because
+ *   the board uses b0_partition, not boot_partition.
+ *
  * LED GPIO — inherited from thingy91x_nrf9151_common.dtsi:
- *   led0 alias → red_led → gpio0 pin 29, active-high (no polarity flag)
- *   No LED overlay entry needed; the base DTS already provides the led0 alias.
+ *   led0 alias → red_led → gpio0 pin 29, active-high
+ *   No LED overlay entry needed.
+ *
+ * nPM1300 charger — the base DTS defines npm1300_charger with status=disabled.
+ *   Adding the pmic_charger label and enabling the node makes
+ *   DEVICE_DT_GET(DT_NODELABEL(pmic_charger)) in fuel_gauge.c resolve correctly.
+ *   Battery specs (LP803448, 675 mA, 4.2 V) are already correct in the base
+ *   DTS node and are inherited without change.
  */
 
-#include <samples/cellular/nrf91_bootloader_partitions.dtsi>
-#include <samples/cellular/nrf91_sram_partitions.dtsi>
+pmic_charger: &npm1300_charger {
+	status = "okay";
+};
