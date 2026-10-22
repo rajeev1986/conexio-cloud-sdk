@@ -10,3 +10,39 @@
 
 #include <samples/cellular/nrf91_bootloader_partitions.dtsi>
 #include <samples/cellular/nrf91_sram_partitions.dtsi>
+#include <zephyr/dt-bindings/regulator/npm13xx.h>
+
+/* Enable I2C pull-ups for nPM1300 PMIC communication.
+ * nRF9160DK arduino_i2c = &i2c2 (SDA: P0.30, SCL: P0.31). */
+&i2c2_default {
+	group1 {
+		bias-pull-up;
+	};
+};
+
+/* nPM1300 PMIC via nPM1300-EK expansion board (address 0x6b on Arduino I2C).
+ * Defines pmic_charger label required by the Conexio Cloud SDK fuel gauge.
+ *
+ * NTC disabled (thermistor-ohms = <0>) — the nPM1300-EK thermistor header
+ * may not have a thermistor connected. With thermistor-ohms = <0> the driver
+ * writes CHGR_OFFSET_DIS_SET bit 1, disabling the NTC comparator so the
+ * charger does not halt on an open-circuit NTC reading.
+ * thermistor-beta is required by the binding but ignored when ohms = 0. */
+&arduino_i2c {
+	npm1300_pmic: pmic@6b {
+		compatible = "nordic,npm1300";
+		reg = <0x6b>;
+
+		pmic_charger: charger {
+			compatible = "nordic,npm1300-charger";
+			term-microvolt = <4200000>;
+			term-warm-microvolt = <4000000>;
+			current-microamp = <150000>;
+			dischg-limit-microamp = <1000000>;
+			vbus-limit-microamp = <500000>;
+			thermistor-ohms = <0>;
+			thermistor-beta = <0>;
+			charging-enable;
+		};
+	};
+};
